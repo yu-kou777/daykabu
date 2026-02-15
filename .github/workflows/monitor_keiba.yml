@@ -1,25 +1,19 @@
 name: Keiba Monitor Bot
 
 on:
-  schedule:
-    - cron: '55 23 * * 5,6' 
-  workflow_dispatch: 
+  workflow_dispatch: # これを単独の行にする
 
 jobs:
-  run-bot:
+  run-bot: # ここが左側に出る名前です
     runs-on: ubuntu-latest
     steps:
-      - name: コードを取得
-        uses: actions/checkout@v4
-
-      - name: Pythonのセットアップ
+      - uses: actions/checkout@v4
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: 必要な部品をインストール
+      - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 pandas openpyxl
-
-      - name: 競馬ボットを実行
+          pip install requests beautifulsoup4 pandas
+      - name: Run script
         run: python monitor_keiba.py "202602150511"
