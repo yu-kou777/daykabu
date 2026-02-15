@@ -2,10 +2,9 @@ name: Keiba Monitor Bot
 
 on:
   schedule:
-    # 毎週 土・日 の日本時間 08:55（市場開始直前）に自動起動
-    # (UTC 23:55 = JST 08:55)
+    # 毎週 土・日 の日本時間 08:55 に自動起動
     - cron: '55 23 * * 5,6' 
-  workflow_dispatch: # ボタン一つで「今すぐ」動かすためのスイッチ
+  workflow_dispatch: # 手動実行ボタンを表示させる設定
 
 jobs:
   run-bot:
@@ -24,4 +23,4 @@ jobs:
           pip install requests beautifulsoup4 pandas openpyxl
 
       - name: 競馬ボットを実行
-        run: python monitor_keiba.py "202602150511" # 引数でレースを指定
+        run: python monitor_keiba.py "202602150511"
