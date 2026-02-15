@@ -2,9 +2,8 @@ name: Keiba Monitor Bot
 
 on:
   schedule:
-    # 毎週 土・日 の日本時間 08:55 に自動起動
     - cron: '55 23 * * 5,6' 
-  workflow_dispatch: # 手動実行ボタンを表示させる設定
+  workflow_dispatch: 
 
 jobs:
   run-bot:
