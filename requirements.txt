@@ -1,6 +1,6 @@
+streamlit==1.32.0
+altair==5.2.0
 yfinance
 pandas
 requests
 beautifulsoup4
-streamlit
-altair
