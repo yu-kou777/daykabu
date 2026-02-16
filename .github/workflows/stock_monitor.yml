@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
-          python-version: '3.10' # 3.9から少し上げます
+          python-version: '3.12' # 👈 ここを3.12に上げることが最重要です！
 
       - name: Install libraries
         run: |
@@ -25,3 +25,4 @@ jobs:
 
       - name: Run Monitor Script
         run: python monitor_stocks.py
+
