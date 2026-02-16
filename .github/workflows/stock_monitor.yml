@@ -2,7 +2,7 @@ name: Stock Monitor Bot
 
 on:
   schedule:
-    # 平日(月-金)の 日本時間 9:00 - 15:00 に15分おきに実行
+    # 平日(月-金)の 日本時間 9:00 - 15:00 (UTC 0:00 - 6:00) に15分おきに実行
     - cron: '*/15 0-6 * * 1-5'
   workflow_dispatch: # 手動実行ボタンもつける
 
@@ -19,10 +19,9 @@ jobs:
           python-version: '3.9'
 
       - name: Install libraries
-        # ここで必要な道具をインストールします
+        # ここが修正ポイント！手動リストではなく、完璧なリストファイルを読み込みます
         run: |
-          pip install yfinance pandas pandas_ta requests
+          pip install -r requirements.txt
 
       - name: Run Monitor Script
         run: python monitor_stocks.py
-
