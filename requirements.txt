@@ -5,4 +5,4 @@ lxml
 html5lib
 beautifulsoup4
 requests
-pandas_ta      <-- これを必ず追加！！
+pandas_ta
