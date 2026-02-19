@@ -7,7 +7,7 @@ import datetime
 # ==========================================
 # ⚙️ 設定：ここにDiscordのWebhook URLを貼ってください
 # ==========================================
-DISCORD_WEBHOOK_URL = "ここにDiscordのWebhook URLを貼り付けてください"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 # 監視リスト
 WATCH_LIST = [
