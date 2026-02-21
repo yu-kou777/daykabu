@@ -9,16 +9,42 @@ from datetime import datetime, timedelta, timezone
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def load_watchlist_from_excel():
-    """エクセル(list.xlsx)から監視リストを読み込む"""
+    """エクセルから監視リストを読み込む（列名が多少違ってもOK版）"""
     try:
-        # openpyxlが必要（requirements.txtに追加済み）
         df = pd.read_excel('list.xlsx')
+        
+        # 全ての列名を「小文字・スペースなし」に変換して、見つけやすくする
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        
+        # 'code' または 'コード' に該当する列を探す
+        code_col = None
+        for c in ['code', 'コード']:
+            if c in df.columns:
+                code_col = c
+                break
+        
+        # 'name' または '銘柄名' または '名前' に該当する列を探す
+        name_col = None
+        for c in ['name', '銘柄名', '名前']:
+            if c in df.columns:
+                name_col = c
+                break
+
+        if code_col is None or name_col is None:
+            print(f"❌ 必要な列が見つかりません。現在の列名: {list(df.columns)}")
+            return {}
+
         watchlist = {}
         for _, row in df.iterrows():
-            code = str(row['code']).strip()
-            # 数字のみの場合は .T を付与
+            code = str(row[code_col]).strip()
+            # 浮動小数点（9984.0）になるのを防ぐ
+            if '.' in code:
+                code = code.split('.')[0]
+                
             full_code = f"{code}.T" if code.isdigit() else code
-            watchlist[full_code] = str(row['name']).strip()
+            watchlist[full_code] = str(row[name_col]).strip()
+            
+        print(f"✅ {len(watchlist)} 銘柄を読み込みました。")
         return watchlist
     except Exception as e:
         print(f"❌ エクセル読み込みエラー: {e}")
