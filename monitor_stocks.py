@@ -9,42 +9,38 @@ from datetime import datetime, timedelta, timezone
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def load_watchlist_from_excel():
-    """エクセルから監視リストを読み込む（列名が多少違ってもOK版）"""
+    """エクセルから監視リストを読み込む（どんな見出しでも探す強化版）"""
     try:
         df = pd.read_excel('list.xlsx')
-        
-        # 全ての列名を「小文字・スペースなし」に変換して、見つけやすくする
+        # 全ての列名を「スペースなし・小文字」に統一して検索しやすくする
+        raw_cols = df.columns.tolist()
         df.columns = [str(c).strip().lower() for c in df.columns]
         
-        # 'code' または 'コード' に該当する列を探す
-        code_col = None
-        for c in ['code', 'コード']:
-            if c in df.columns:
-                code_col = c
-                break
+        # 1. コード列の特定 (code, コード, 銘柄コード, 証券コード など)
+        code_candidates = ['code', 'コード', '銘柄コード', '証券コード', '銘柄']
+        code_col = next((c for c in code_candidates if c in df.columns), None)
         
-        # 'name' または '銘柄名' または '名前' に該当する列を探す
-        name_col = None
-        for c in ['name', '銘柄名', '名前']:
-            if c in df.columns:
-                name_col = c
-                break
+        # 2. 名前列の特定 (name, 銘柄名, 名前, 銘柄名(漢字) など)
+        name_candidates = ['name', '銘柄名', '名前', '銘柄', '会社名']
+        name_col = next((c for c in name_candidates if c in df.columns), None)
 
-        if code_col is None or name_col is None:
-            print(f"❌ 必要な列が見つかりません。現在の列名: {list(df.columns)}")
+        if code_col is None:
+            print(f"❌ 必要な列が見つかりません。現在の見出し: {raw_cols}")
             return {}
 
         watchlist = {}
         for _, row in df.iterrows():
             code = str(row[code_col]).strip()
-            # 浮動小数点（9984.0）になるのを防ぐ
-            if '.' in code:
-                code = code.split('.')[0]
-                
-            full_code = f"{code}.T" if code.isdigit() else code
-            watchlist[full_code] = str(row[name_col]).strip()
+            # 9984.0 などの小数点を除去
+            if '.' in code: code = code.split('.')[0]
             
-        print(f"✅ {len(watchlist)} 銘柄を読み込みました。")
+            full_code = f"{code}.T" if code.isdigit() else code
+            # 名前列がない場合は、コードを名前に代用する（エラーを防ぐ）
+            name = str(row[name_col]).strip() if name_col else f"銘柄:{code}"
+            
+            watchlist[full_code] = name
+            
+        print(f"✅ {len(watchlist)} 銘柄の読み込みに成功しました。")
         return watchlist
     except Exception as e:
         print(f"❌ エクセル読み込みエラー: {e}")
@@ -66,7 +62,6 @@ def analyze_stock(ticker, name):
         df_w = tkr.history(period="2y", interval="1wk")
         if df_d.empty or df_w.empty: return None
 
-        # 指標計算
         price = df_d.iloc[-1]['Close']
         df_w['MA20'] = df_w['Close'].rolling(20).mean()
         target_p = int(df_w['MA20'].iloc[-1])
@@ -79,14 +74,13 @@ def analyze_stock(ticker, name):
         rsi_w = ta.rsi(df_w['Close'], length=14).iloc[-1]
         dev_w = (price - target_p) / target_p * 100
 
-        # 反発・トレンド判定
         is_oversold = rsi_w < 35 or dev_w < -15
         if is_oversold:
             rebound_msg = f"🎯 反発開始 (目標:{target_p})" if is_d_up else f"⏳ 底打ち模索中 ({target_p})"
-            color = 3066993 if is_d_up else 15105570 # 緑色 or オレンジ
+            color = 3066993 if is_d_up else 15105570
         else:
             rebound_msg = "📈 巡航中" if is_d_up else "📉 調整中"
-            color = 3447003 if is_d_up else 10070709 # 青色 or 灰色
+            color = 3447003 if is_d_up else 10070709
 
         score = (50 if is_w_up else -50) + (40 if is_oversold else 0) + (30 if is_d_up else -30)
 
@@ -115,7 +109,6 @@ def send_discord(data, session_name):
     requests.post(DISCORD_WEBHOOK_URL, json=payload)
 
 if __name__ == "__main__":
-    # 日本時間を取得
     jst = timezone(timedelta(hours=9))
     now = datetime.now(jst)
     h = now.hour
