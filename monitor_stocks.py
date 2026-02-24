@@ -18,15 +18,12 @@ NAME_MAP = {
 }
 
 def load_watchlist():
-    """エクセルから銘柄を読み込み、和名を補完する"""
     try:
         if not os.path.exists('list.xlsx'):
             return {code: NAME_MAP.get(code, code) for code in NAME_MAP.keys()}
-        
         df = pd.read_excel('list.xlsx')
         df.columns = [str(c).strip().lower() for c in df.columns]
         code_col = next((c for c in ['code', 'コード', '銘柄コード'] if c in df.columns), None)
-        
         watchlist = {}
         for c in df[code_col]:
             code = f"{str(c).strip().split('.')[0]}.T"
@@ -44,25 +41,47 @@ def analyze_stock(ticker, name):
         # 指標計算
         df['MA20'] = df['Close'].rolling(20).mean()
         df['MA60'] = df['Close'].rolling(60).mean()
+        macd = ta.macd(df['Close'])
+        df = pd.concat([df, macd], axis=1)
         rsi = ta.rsi(df['Close'], length=14).iloc[-1]
         price = int(df['Close'].iloc[-1])
         
-        # 精密指値と利確目標の算出 (Sniper Pro ロジック)
+        # 物理的な節目（Sniper Proロジック）
         std20 = df['Close'].rolling(20).std().iloc[-1]
         low_60 = df['Low'].tail(60).min()
+        high_60 = df['High'].tail(60).max()
         floor = int((df['MA20'].iloc[-1] - (std20 * 2) + low_60) / 2)
-        target1 = int(df['MA20'].iloc[-1])
-        target2 = int(df['MA60'].iloc[-1])
+        ceiling = int((df['MA20'].iloc[-1] + (std20 * 2) + high_60) / 2)
         
-        # スコア判定
+        # --- 精密判定ロジック ---
         score = 0
-        if price <= floor * 1.02: score += 50
-        if rsi < 35: score += 30
+        direction = "☁️ 様子見"
+        color = 10070709 # グレー
+
+        # 買いの根拠
+        if price <= floor * 1.015: score += 40  # 底値接近
+        if rsi < 35: score += 30                # 売られすぎ
+        if df['MACDh_12_26_9'].iloc[-1] > 0: score += 20 # 勢いプラス
+
+        # 売りの根拠
+        if price >= ceiling * 0.985: score -= 40 # 天井接近
+        if rsi > 65: score -= 30                 # 買われすぎ
+        if df['MACDh_12_26_9'].iloc[-1] < 0: score -= 20 # 勢いマイナス
+
+        if score >= 60:
+            direction = "🚀 買い推奨 (強気)"; color = 3066993 # 緑
+        elif score >= 20:
+            direction = "✨ 買い検討 (押し目)"; color = 15105570 # オレンジ
+        elif score <= -60:
+            direction = "📉 売り推奨 (強気)"; color = 15158332 # 赤
+        elif score <= -20:
+            direction = "☔ 売り検討 (戻り売り)"; color = 12370112 # 紫
 
         return {
             "name": name, "code": ticker.replace(".T",""),
-            "price": price, "floor": floor, "target1": target1, "target2": target2,
-            "score": score, "rsi": round(rsi, 1)
+            "price": price, "floor": floor, "ceiling": ceiling,
+            "target1": int(df['MA20'].iloc[-1]), "target2": int(df['MA60'].iloc[-1]),
+            "score": score, "rsi": round(rsi, 1), "direction": direction, "color": color
         }
     except: return None
 
@@ -71,16 +90,16 @@ def send_discord(data, session):
         "username": "Stock Sniper 🦅",
         "embeds": [{
             "title": f"【{session}】{data['name']} ({data['code']})",
-            "description": f"**現在値: {data['price']}円**",
-            "color": 3066993 if data['score'] > 30 else 10070709,
+            "description": f"## 判定: {data['direction']}\n**現在値: {data['price']}円**",
+            "color": data['color'],
             "fields": [
-                {"name": "🔵 指値目安", "value": f"**{data['floor']}円**", "inline": True},
+                {"name": "🔵 指値(買/戻)", "value": f"**{data['floor'] if data['score'] >= 0 else data['ceiling']}円**", "inline": True},
                 {"name": "🟢 利確目標1", "value": f"{data['target1']}円", "inline": True},
                 {"name": "🔴 利確目標2", "value": f"{data['target2']}円", "inline": True},
                 {"name": "🧠 スコア", "value": f"{data['score']}点", "inline": True},
                 {"name": "🌊 RSI", "value": f"{data['rsi']}", "inline": True}
             ],
-            "footer": {"text": f"観測: {datetime.now(timezone(timedelta(hours=9))).strftime('%H:%M')}"}
+            "footer": {"text": f"観測時刻: {datetime.now(timezone(timedelta(hours=9))).strftime('%Y/%m/%d %H:%M')}"}
         }]
     }
     requests.post(DISCORD_WEBHOOK_URL, json=payload)
@@ -93,6 +112,6 @@ if __name__ == "__main__":
     watchlist = load_watchlist()
     for code, name in watchlist.items():
         res = analyze_stock(code, name)
-        # スコアがある程度高い（チャンスがある）銘柄のみ通知
-        if res and res['score'] >= 20:
+        # スコアに動きがある（判定が出ている）銘柄のみ通知
+        if res and abs(res['score']) >= 20:
             send_discord(res, session)
