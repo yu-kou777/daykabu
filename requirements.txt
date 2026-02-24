@@ -1,7 +1,7 @@
 streamlit
 yfinance
-pandas
-pandas-ta
+pandas<3.0.0
+pandas_ta
 plotly
 requests
 openpyxl
