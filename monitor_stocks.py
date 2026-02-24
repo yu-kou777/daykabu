@@ -6,9 +6,10 @@ import os
 from datetime import datetime, timedelta, timezone
 
 # --- 設定 ---
+# ⚠️ ここが正しいか今一度Discordの設定画面で確認してください
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
-# 📖 和名データベース (登録がない場合は yfinance から自動取得)
+# 📖 和名データベース
 NAME_MAP = {
     "8035.T": "東京エレクトロン", "6920.T": "レーザーテック", "6857.T": "アドバンテスト",
     "6723.T": "ルネサス", "6758.T": "ソニーグループ", "6501.T": "日立製作所",
@@ -22,7 +23,6 @@ def load_watchlist():
     watchlist = {}
     try:
         if os.path.exists('list.xlsx'):
-            print("📂 list.xlsx を読み込み中...")
             df = pd.read_excel('list.xlsx')
             df.columns = [str(c).strip().lower() for c in df.columns]
             code_col = next((c for c in ['code', 'コード', '銘柄コード', '証券コード'] if c in df.columns), None)
@@ -32,27 +32,22 @@ def load_watchlist():
                     code_str = str(c).split('.')[0].strip()
                     if code_str.isdigit():
                         ticker = f"{code_str}.T"
-                        name = NAME_MAP.get(ticker, f"銘柄:{code_str}")
-                        watchlist[ticker] = name
+                        watchlist[ticker] = NAME_MAP.get(ticker, f"銘柄:{code_str}")
         
         if not watchlist:
-            print("⚠️ リストが空のため、デフォルト銘柄を使用します。")
-            watchlist = {"9984.T": "ソフトバンクG", "9101.T": "日本郵船", "6330.T": "東洋エンジ"}
+            watchlist = {"9984.T": "ソフトバンクG", "9101.T": "日本郵船"}
             
     except Exception as e:
         print(f"❌ リスト読み込み失敗: {e}")
         watchlist = {"9984.T": "ソフトバンクG", "9101.T": "日本郵船"}
     
-    print(f"🔍 哨戒対象: {list(watchlist.values())}")
     return watchlist
 
 def analyze_stock(ticker, name):
     try:
         tkr = yf.Ticker(ticker)
         df = tkr.history(period="6mo", interval="1d")
-        if df.empty or len(df) < 60:
-            print(f"⏩ {name}: データ不足のためスキップ")
-            return None
+        if df.empty or len(df) < 60: return None
         
         # 指標計算
         df['MA20'] = df['Close'].rolling(20).mean()
@@ -68,7 +63,7 @@ def analyze_stock(ticker, name):
         floor = int((df['MA20'].iloc[-1] - (std20 * 2) + low_60) / 2)
         ceiling = int((df['MA20'].iloc[-1] + (std20 * 2) + high_60) / 2)
         
-        # スコア判定
+        # スコア
         score = 0
         if price <= floor * 1.02: score += 40
         if rsi < 40: score += 20
@@ -77,23 +72,20 @@ def analyze_stock(ticker, name):
         if rsi > 60: score -= 20
         if df['MACDh_12_26_9'].iloc[-1] < 0: score -= 20
 
-        # 判定カテゴリ
+        # 判定
         if score >= 50: direction = "🚀 買い推奨 (強気)"; color = 3066993
         elif score >= 10: direction = "✨ 買い検討"; color = 15105570
         elif score <= -50: direction = "📉 売り推奨 (強気)"; color = 15158332
         elif score <= -10: direction = "☔ 売り検討"; color = 12370112
         else: direction = "☁️ 様子見"; color = 10070709
 
-        print(f"✅ {name}: {direction} ({score}点)")
         return {
             "name": name, "code": ticker.replace(".T",""),
             "price": price, "floor": floor, "ceiling": ceiling,
             "target1": int(df['MA20'].iloc[-1]), "target2": int(df['MA60'].iloc[-1]),
-            "score": score, "rsi": round(rsi, 1), "direction": direction, "color": color
+            "score": score, "direction": direction, "color": color
         }
-    except Exception as e:
-        print(f"❌ {name} 解析エラー: {e}")
-        return None
+    except: return None
 
 def send_discord(data, session):
     entry_label = "🔵 戻り売り目安" if data['score'] < 0 else "🔵 指値目安"
@@ -110,26 +102,27 @@ def send_discord(data, session):
                 {"name": "🟢 利確1", "value": f"{data['target1']}円", "inline": True},
                 {"name": "🔴 利確2", "value": f"{data['target2']}円", "inline": True},
                 {"name": "🧠 スコア", "value": f"{data['score']}点", "inline": True}
-            ],
-            "footer": {"text": f"観測時刻: {datetime.now(timezone(timedelta(hours=9))).strftime('%H:%M')}"}
+            ]
         }]
     }
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    # ★ 送信結果をチェックするように強化
+    response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    if response.status_code == 204:
+        print(f"✅ {data['name']} 送信成功")
+    else:
+        print(f"❌ {data['name']} 送信失敗 (ステータスコード: {response.status_code})")
+        print(f"   理由: {response.text}")
 
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
     h = datetime.now(jst).hour
-    session = "前場観測" if h < 11 else "後場観測" if h < 15 else "市場報告"
+    session = "市場観測"
     
-    print(f"🚀 哨戒ミッション開始: {session}")
     watchlist = load_watchlist()
-    
     sent_count = 0
     for ticker, name in watchlist.items():
         res = analyze_stock(ticker, name)
-        # デバッグのため、様子見以外はすべて通知するように一旦緩和
         if res and abs(res['score']) >= 10:
             send_discord(res, session)
             sent_count += 1
-    
-    print(f"🏁 哨戒完了。{sent_count} 件の通知を送信しました。")
+    print(f"🏁 哨戒完了。{sent_count} 件の処理が終わりました。")
