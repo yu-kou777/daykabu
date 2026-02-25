@@ -6,7 +6,6 @@ import os
 from datetime import datetime, timedelta, timezone
 
 # --- 設定 ---
-# 以前のコードから抽出したWebhook URL
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 # 📖 和名データベース
@@ -23,6 +22,7 @@ def load_watchlist():
     watchlist = {}
     try:
         if os.path.exists('list.xlsx'):
+            print("📂 list.xlsx を発見。解析中...")
             df = pd.read_excel('list.xlsx')
             df.columns = [str(c).strip().lower() for c in df.columns]
             code_col = next((c for c in ['code', 'コード', '銘柄コード'] if c in df.columns), None)
@@ -33,8 +33,10 @@ def load_watchlist():
                         ticker = f"{code_str}.T"
                         watchlist[ticker] = NAME_MAP.get(ticker, f"銘柄:{code_str}")
         if not watchlist:
+            print("⚠️ リストが空のため、デフォルト設定を使用します。")
             watchlist = {k: v for k, v in NAME_MAP.items()}
-    except:
+    except Exception as e:
+        print(f"❌ リスト読み込み失敗: {e}")
         watchlist = {"9101.T": "日本郵船", "6330.T": "東洋エンジ"}
     return watchlist
 
@@ -42,47 +44,46 @@ def analyze_stock(ticker, name):
     try:
         tkr = yf.Ticker(ticker)
         df = tkr.history(period="6mo", interval="1d")
-        if len(df) < 30: return None
+        if len(df) < 30: 
+            print(f"⏩ {name}: データ不足")
+            return None
         
         # 指標計算
-        df['MA25'] = df['Close'].rolling(window=25).mean()
-        df['Kairi'] = ((df['Close'] - df['MA25']) / df['MA25']) * 100
         df.ta.rsi(length=14, append=True)
         macd = ta.macd(df['Close'])
         df = pd.concat([df, macd], axis=1)
         
         price = int(df['Close'].iloc[-1])
         rsi = df['RSI_14'].iloc[-1]
-        kairi = df['Kairi'].iloc[-1]
-        macd_h = df['MACDh_12_26_9'].iloc[-1] # 需給判定用
+        macd_h = df['MACDh_12_26_9'].iloc[-1]
         
-        # --- 画像を参考にした「簡単な説明」の生成 ---
         # 需給判定
-        if macd_h > 0: jugyu = "📈 買い優勢"
-        elif macd_h < 0: jugyu = "📉 売り優勢"
-        else: jugyu = "☁️ 拮抗"
+        jugyu = "📈 買い優勢" if macd_h > 0 else "📉 売り優勢" if macd_h < 0 else "☁️ 拮抗"
 
-        # 判定とコメント
-        if rsi <= 30:
+        # 判定条件（テストのため一旦 RSI 40/60 に緩和しています）
+        if rsi <= 40: # ★動作確認のため 30 -> 40 に緩和
             status = "🐢✨ 買いサイン"
-            comment = "📊⚡ 【RSI売られすぎ】反発の臨界点に到達！"
-            color = 3066993 # 緑
-        elif rsi >= 70:
+            comment = "📊⚡ 【RSI低位】反発のチャンスを伺うゾーンです。"
+            color = 3066993
+        elif rsi >= 60: # ★動作確認のため 70 -> 60 に緩和
             status = "🐇📉 売りサイン"
-            comment = "⚠️ 【RSI買われすぎ】利確・調整の警戒ゾーンです。"
-            color = 15158332 # 赤
+            comment = "⚠️ 【RSI高位】利確を検討すべき警戒ゾーンです。"
+            color = 15158332
         else:
-            return None # どちらでもなければ通知しない（ノイズカット）
+            print(f"➖ {name}: 判定外 (RSI: {rsi:.1f})")
+            return None
 
         return {
             "name": name, "code": ticker, "price": f"{price:,}",
             "rsi": round(rsi, 1), "jugyu": jugyu, "status": status,
             "comment": comment, "color": color
         }
-    except: return None
+    except Exception as e:
+        print(f"❌ {ticker} 解析エラー: {e}")
+        return None
 
 def send_discord(data):
-    # 画像の「AI監視レポート」風のフォーマット
+    # 画像の「AI監視レポート」風フォーマット
     content = (
         f"🦅 **AI監視レポート**\n"
         f"{data['status']} **{data['name']}({data['code']})**\n"
@@ -92,11 +93,19 @@ def send_discord(data):
     )
     
     payload = {"username": "株監視AI教授", "content": content}
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    res = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    if res.status_code == 204:
+        print(f"✅ {data['name']} 送信成功")
+    else:
+        print(f"❌ {data['name']} 送信失敗 (Code: {res.status_code})")
 
 if __name__ == "__main__":
+    print(f"🚀 哨戒ミッション開始: {datetime.now().strftime('%H:%M:%S')}")
     watchlist = load_watchlist()
+    sent_count = 0
     for ticker, name in watchlist.items():
         res = analyze_stock(ticker, name)
         if res:
             send_discord(res)
+            sent_count += 1
+    print(f"🏁 哨戒完了。{sent_count} 件の通知を送信しました。")
