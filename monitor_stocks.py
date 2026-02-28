@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 # --- 設定 ---
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL" # ここにURLを貼り付け
+DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme" # ここにURLを貼り付け
 
 def calculate_rci(series, period):
     """RCI(順位相関指数)を計算する関数"""
