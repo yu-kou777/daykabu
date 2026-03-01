@@ -4,7 +4,6 @@ import pandas_ta as ta
 import requests
 import time
 import io
-import os
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 
@@ -38,34 +37,51 @@ def get_latest_prime_list():
     except:
         return {"9101.T": "日本郵船", "6481.T": "THK"}
 
+def send_discord(title, stock_list):
+    """リスト形式でDiscordに送信（2000文字制限対策）"""
+    if not stock_list:
+        return
+    
+    header = f"【{title}】\n"
+    content = ""
+    for item in stock_list:
+        if len(content + header + item) > 1900:
+            requests.post(DISCORD_WEBHOOK_URL, json={"content": header + content})
+            content = ""
+        content += item + "\n"
+    
+    if content:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": header + content})
+
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
-    now_str = datetime.now(jst).strftime('%H:%M')
+    now_str = datetime.now(jst).strftime('%Y/%m/%d %H:%M')
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **厳選・長期トレンド哨戒開始({len(ticker_list)}社)** ({now_str})"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🔎 **パトロール開始** ({now_str})\n対象: プライム市場 {len(ticker_list)}社 / 株価3,001円～30,000円"})
+
+    # 結果格納用
+    buy_signals = []      # 押し目買い候補
+    strong_uptrend = []   # 強い上昇トレンド
+    profit_take = []     # 利確・過熱警戒
+    strong_downtrend = [] # 強い下降トレンド
 
     chunk_size = 400
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
-        # MA200計算のため期間を2年に延長
         data_chunk = yf.download(chunk, period="2y", interval="1d", group_by='ticker', threads=True)
         all_data = pd.concat([all_data, data_chunk], axis=1)
         time.sleep(5)
 
-    found_count = 0
     for ticker in ticker_list:
         try:
             df = all_data[ticker].dropna()
             if len(df) < 201: continue
-
-            curr_price = df['Close'].iloc[-1]
             
-            # 【追加条件】5円刻みの価格帯（3,001円〜30,000円）に絞り込み
-            if not (3000 < curr_price <= 30000):
-                continue
+            curr_price = df['Close'].iloc[-1]
+            if not (3000 < curr_price <= 30000): continue
 
             # 指標計算
             df['RSI'] = ta.rsi(df['Close'], length=14)
@@ -77,43 +93,40 @@ if __name__ == "__main__":
             
             curr = df.iloc[-1]
             prev = df.iloc[-2]
+            name = ticker_map[ticker]
+            price = int(curr_price)
 
-            signal = None
-            reason = []
+            # トレンド判定
+            is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
+            is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
 
-            # 1. 逆張り/過熱条件
-            if curr['RCI9'] <= -50:
-                signal = "🔵【買い検討(安値圏)】"
-                reason.append("RCI -50以下")
-            elif curr['RCI9'] >= 95 and curr['RSI'] >= 90:
-                signal = "💰【利確準備(過熱)】"
-                reason.append("RCI95以上 & RSI90以上")
+            # --- カテゴリ分け ---
             
-            # 2. 長期トレンド判定（MA200を含むパーフェクトオーダーの上昇/下降）
-            else:
-                # すべてのMAが前日より上昇
-                ma_rising = all([curr[ma] > prev[ma] for ma in ['MA5', 'MA20', 'MA60', 'MA200']])
-                # すべてのMAが前日より下降
-                ma_falling = all([curr[ma] < prev[ma] for ma in ['MA5', 'MA20', 'MA60', 'MA200']])
-                
-                if ma_rising:
-                    signal = "💎【極・買い(200日込上昇)】"
-                    reason.append("全MA(5/20/60/200)上昇")
-                elif ma_falling:
-                    signal = "🌪️【極・売り(200日込下降)】"
-                    reason.append("全MA(5/20/60/200)下降")
+            # 1. 【最優先】上昇トレンド中の押し目買い (RSI < 50 かつ RCI底打ち)
+            if is_uptrend and curr['RSI'] < 50 and curr['RCI9'] < -50:
+                buy_signals.append(f"✨ {name}({ticker}) : {price}円 (RSI:{round(curr['RSI'],1)} RCI:{round(curr['RCI9'],1)})")
+            
+            # 2. 過熱・利確警戒
+            elif curr['RCI9'] > 90 and curr['RSI'] > 80:
+                profit_take.append(f"💰 {name}({ticker}) : {price}円 (過熱)")
 
-            if signal:
-                found_count += 1
-                content = (
-                    f"🦅 **{signal}**\n"
-                    f"**{ticker_map[ticker]}({ticker})**\n"
-                    f"└ 価格: {int(curr_price)}円 / RSI: {round(curr['RSI'], 1)}\n"
-                    f"└ 理由: {' / '.join(reason)}"
-                )
-                requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-                time.sleep(1)
+            # 3. 強い上昇 (パーフェクトオーダー)
+            elif is_uptrend:
+                # 前日比でMAが伸びているもの
+                if curr['MA5'] > prev['MA5']:
+                    strong_uptrend.append(f"🔥 {name}({ticker}) : {price}円")
+
+            # 4. 強い下降
+            elif is_downtrend:
+                strong_downtrend.append(f"💀 {name}({ticker}) : {price}円")
+
         except:
             continue
 
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **厳選哨戒完了** 合致: {found_count}件"})
+    # --- まとめて通知 ---
+    send_discord("✨ 押し目買い候補 (上昇トレンド×安値圏)", buy_signals)
+    send_discord("🔥 強い上昇トレンド (パーフェクトオーダー)", strong_uptrend)
+    send_discord("💰 利確検討 (高値圏)", profit_take)
+    send_discord("💀 強い下降トレンド (三役下降)", strong_downtrend)
+
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": "✅ **パトロール完了**"})
