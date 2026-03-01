@@ -7,7 +7,7 @@ import io
 import os
 from datetime import datetime, timedelta, timezone
 
-# --- 設定（URL修正済み） ---
+# --- 設定（URL入力済み） ---
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def calculate_rci(series, period):
@@ -29,35 +29,30 @@ def is_trough_up(series):
     return (series.iloc[-2] < series.iloc[-3]) and (series.iloc[-2] < series.iloc[-1])
 
 def get_latest_prime_list():
-    """JPXから最新のプライム全銘柄リストを取得（複数URL対応）"""
-    urls = [
-        "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls",
-        "https://www.jpx.co.jp/markets/statistics-banner/quote/tvdivq0000001vg2-att/data_j.xls"
-    ]
+    """JPXから最新のプライム全銘柄リストを取得"""
+    url = "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls"
     headers = {"User-Agent": "Mozilla/5.0"}
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                df_jpx = pd.read_excel(io.BytesIO(resp.content))
-                prime_df = df_jpx[df_jpx['市場・商品区分'].str.contains('プライム', na=False)]
-                return {f"{int(row['コード'])}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
-        except:
-            continue
-    # 万が一のバックアップ
-    return {"9101.T": "日本郵船", "6481.T": "THK", "7203.T": "トヨタ"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        df_jpx = pd.read_excel(io.BytesIO(resp.content))
+        prime_df = df_jpx[df_jpx['市場・商品区分'].str.contains('プライム', na=False)]
+        return {f"{int(row['コード'])}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
+    except Exception as e:
+        print(f"リスト取得失敗: {e}")
+        return {"9101.T": "日本郵船", "6481.T": "THK", "7203.T": "トヨタ"}
 
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
     now_str = datetime.now(jst).strftime('%H:%M')
     
+    # 1. 最新リストを取得
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    # 最初の通知が届けば、URL設定は成功です！
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **プライム市場({len(ticker_list)}社) 哨戒開始** ({now_str})"})
+    # URLが正しいか、まずDiscordにテスト通知を送ります
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **プライム市場({len(ticker_list)}社) 高精度哨戒を開始** ({now_str})"})
 
-    # 1600件を一括ダウンロード
+    # 2. 一括データ取得
     all_data = yf.download(ticker_list, period="6mo", interval="1d", group_by='ticker', threads=True)
 
     found_count = 0
@@ -103,4 +98,4 @@ if __name__ == "__main__":
         except:
             continue
 
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒完了** 合致: {found_count}件"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒ミッション完了** 合致: {found_count}件"})
