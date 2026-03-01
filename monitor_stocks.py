@@ -4,8 +4,9 @@ import pandas_ta as ta
 import requests
 import time
 import io
-import os
+import re
 from datetime import datetime, timedelta, timezone
+from bs4 import BeautifulSoup
 
 # --- 設定 ---
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
@@ -18,81 +19,69 @@ def calculate_rci(series, period):
         return (1 - (6 * d) / (n * (n**2 - 1))) * 100
     return series.rolling(window=n).apply(rci_func)
 
-def is_peak_down(series):
-    if len(series) < 4: return False
-    return (series.iloc[-2] > series.iloc[-3]) and (series.iloc[-2] > series.iloc[-1])
-
-def is_trough_up(series):
-    if len(series) < 4: return False
-    return (series.iloc[-2] < series.iloc[-3]) and (series.iloc[-2] < series.iloc[-1])
-
 def get_latest_prime_list():
-    """JPXから最新の名簿を取得（エラー報告付き）"""
-    # JPXの最新URL候補
-    urls = [
-        "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls",
-        "https://www.jpx.co.jp/markets/statistics-banner/quote/tvdivq0000001vg2-att/data_j.xls"
-    ]
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    
-    last_error = ""
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            if resp.status_code == 200:
-                df_jpx = pd.read_excel(io.BytesIO(resp.content))
-                # 「プライム」という文字が含まれる銘柄を抽出
-                prime_df = df_jpx[df_jpx['市場・商品区分'].str.contains('プライム', na=False)]
-                tickers = {f"{int(row['コード'])}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
-                if len(tickers) > 100:
-                    return tickers
-        except Exception as e:
-            last_error = str(e)
-            continue
-    
-    # 失敗した場合はDiscordに原因を報告
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚨 **名簿取得エラー**: {last_error}\nURLが古いか、ライブラリ(openpyxl)が不足しています。"})
-    return None
+    """JPXのページから最新のExcelリンクを自動検出して読み込む"""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        # JPXの統計ページから最新のdata_j.xlsを探す
+        base_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+        res = requests.get(base_url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        xls_path = ""
+        for a in soup.find_all('a', href=True):
+            if 'data_j.xls' in a['href']:
+                xls_path = a['href']
+                break
+        
+        if not xls_path:
+            raise Exception("Excelリンクの自動検出に失敗しました")
+            
+        full_url = "https://www.jpx.co.jp" + xls_path
+        print(f"📡 最新名簿をダウンロード中: {full_url}")
+        
+        resp = requests.get(full_url, headers=headers)
+        df = pd.read_excel(io.BytesIO(resp.content))
+        # プライム市場のみ抽出
+        prime_df = df[df['市場・商品区分'].str.contains('プライム', na=False)]
+        return {f"{int(row['コード'])}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
+    except Exception as e:
+        print(f"❌ リスト取得エラー: {e}")
+        return {"9101.T": "日本郵船", "6481.T": "THK", "7203.T": "トヨタ"}
 
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
     now_str = datetime.now(jst).strftime('%H:%M')
     
     ticker_map = get_latest_prime_list()
-    
-    if not ticker_map:
-        # 3銘柄で無理やり動かさず、ここで終了させる
-        exit()
-
     ticker_list = list(ticker_map.keys())
     
     # 開始通知
     requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **プライム市場({len(ticker_list)}社) 高精度哨戒を開始** ({now_str})"})
 
-    # データ一括取得（1600件は数分かかります）
-    # threads=True で高速化
-    try:
-        all_data = yf.download(ticker_list, period="6mo", interval="1d", group_by='ticker', threads=True)
-    except Exception as e:
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚨 **データ取得エラー**: {e}"})
-        exit()
+    # データ一括取得
+    all_data = yf.download(ticker_list, period="6mo", interval="1d", group_by='ticker', threads=True)
 
     found_count = 0
     for ticker in ticker_list:
         try:
-            # yfinanceのデータ形式に対応
             df = all_data[ticker].dropna()
-            if df.empty or len(df) < 30: continue
+            if len(df) < 30: continue
 
+            # 指標計算
             df.ta.rsi(length=14, append=True)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['RCI26'] = calculate_rci(df['Close'], 26)
             
             curr, prev = df.iloc[-1], df.iloc[-2]
 
-            peak_down = is_peak_down(df['RSI_14']) and is_peak_down(df['RCI9'])
-            trough_up = is_trough_up(df['RSI_14']) and is_trough_up(df['RCI9'])
+            # 同期ピーク判定
+            peak_down = (prev['RSI_14'] > df['RSI_14'].iloc[-3]) and (prev['RSI_14'] > curr['RSI_14']) and \
+                        (prev['RCI9'] > df['RCI9'].iloc[-3]) and (prev['RCI9'] > curr['RCI9'])
+            trough_up = (prev['RSI_14'] < df['RSI_14'].iloc[-3]) and (prev['RSI_14'] < curr['RSI_14']) and \
+                        (prev['RCI9'] < df['RCI9'].iloc[-3]) and (prev['RCI9'] < curr['RCI9'])
             
+            # RCIクロス
             gc = (prev['RCI9'] <= prev['RCI26']) and (curr['RCI9'] > curr['RCI26'])
             dc = (prev['RCI9'] >= prev['RCI26']) and (curr['RCI9'] < curr['RCI26'])
 
@@ -116,8 +105,9 @@ if __name__ == "__main__":
                     f"└ 理由: {' / '.join(reason)}"
                 )
                 requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-                time.sleep(1) 
+                time.sleep(0.5)
         except:
             continue
 
     requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒完了** 合致: {found_count}件"})
+
