@@ -2,7 +2,7 @@ name: Stock Monitor
 
 on:
   schedule:
-    # 日本時間 14:50 (大引け10分前) に実行
+    # 日本時間 14:50 (大引け10分前) 実行
     - cron: '50 5 * * 1-5'
   workflow_dispatch:
 
@@ -19,8 +19,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install yfinance pandas pandas-ta requests xlrd
+          pip install yfinance pandas pandas-ta requests openpyxl xlrd
       - name: Run monitor
-        env:
-          DISCORD_WEBHOOK_URL: "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
         run: python monitor_stocks.py
