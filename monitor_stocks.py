@@ -3,13 +3,14 @@ import pandas as pd
 import pandas_ta as ta
 import requests
 import time
-import os
+import io
 from datetime import datetime, timedelta, timezone
 
 # --- 設定 ---
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def calculate_rci(series, period):
+    """RCI(順位相関指数)を計算"""
     n = period
     rank_period = pd.Series(range(n, 0, -1))
     def rci_func(x):
@@ -18,15 +19,32 @@ def calculate_rci(series, period):
     return series.rolling(window=n).apply(rci_func)
 
 def get_prime_tickers():
-    """JPXからプライム市場銘柄を自動取得"""
-    try:
-        url = "https://www.jpx.co.jp/markets/statistics-banner/quote/tvdivq0000001vg2-att/data_j.xls"
-        df = pd.read_excel(url)
-        prime_df = df[df['市場・商品区分'].str.contains('プライム', na=False)]
-        return {f"{row['コード']}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
-    except Exception as e:
-        print(f"銘柄取得エラー: {e}")
-        return {"9101.T": "日本郵船", "8035.T": "東エレク", "9984.T": "SBG", "7203.T": "トヨタ"}
+    """JPXから最新のプライム銘柄リストを取得。失敗時は代替手段を試行。"""
+    # 2026年現在の最新候補URL（JPXはURLを動的に変えるため複数用意）
+    urls = [
+        "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls",
+        "https://www.jpx.co.jp/markets/statistics-banner/quote/tvdivq0000001vg2-att/data_j.xls"
+    ]
+    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    
+    for url in urls:
+        try:
+            print(f"📡 リスト取得中: {url}")
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                df = pd.read_excel(io.BytesIO(resp.content))
+                # 市場区分が「プライム」の銘柄を抽出
+                prime_df = df[df['市場・商品区分'].str.contains('プライム', na=False)]
+                tickers = {f"{row['コード']}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
+                if tickers:
+                    return tickers
+        except Exception as e:
+            print(f"⚠️ URL {url} でエラー: {e}")
+            continue
+            
+    # 全滅した場合のみ、最小限の銘柄でなくエラーを出すように変更
+    raise Exception("❌ JPXから銘柄リストを取得できませんでした。URLが変更されている可能性があります。")
 
 def analyze_stock(ticker, name):
     try:
@@ -34,25 +52,28 @@ def analyze_stock(ticker, name):
         df = tkr.history(period="6mo", interval="1d")
         if len(df) < 26: return None
 
-        # 指標計算
+        # 25日移動平均線と乖離率
         df['MA25'] = df['Close'].rolling(window=25).mean()
         curr_price = df['Close'].iloc[-1]
         kairi = ((curr_price - df['MA25'].iloc[-1]) / df['MA25'].iloc[-1]) * 100
         
+        # RCI (短期9日, 長期26日)
         df['RCI9'] = calculate_rci(df['Close'], 9)
         df['RCI26'] = calculate_rci(df['Close'], 26)
         curr, prev = df.iloc[-1], df.iloc[-2]
         
         signal_type = None
-        # 乖離率 ±10%〜15% かつ RCIクロス
+        # 1. 買い: 乖離 -10%以下 ＋ RCIゴールデンクロス
         if kairi <= -10.0 and (curr['RCI9'] > curr['RCI26']) and (curr['RCI9'] > prev['RCI9']):
             signal_type = "BUY"
+        # 2. 売り: 乖離 +10%以上 ＋ RCIデッドクロス
         elif kairi >= 10.0 and (curr['RCI9'] < curr['RCI26']) and (curr['RCI9'] < prev['RCI9']):
             signal_type = "SELL"
 
         if signal_type:
+            # PBRは情報として取得
             pbr = tkr.info.get('priceToBook', 0)
-            pbr_eval = "🌟割安" if (pbr > 0 and pbr <= 1.0) else f"{round(pbr, 2)}倍"
+            pbr_eval = "🌟1倍割れ" if (0 < pbr <= 1.0) else f"{round(pbr, 2)}倍"
             return {
                 "type": signal_type, "name": name, "code": ticker, "price": int(curr_price),
                 "kairi": round(kairi, 1), "pbr": pbr_eval,
@@ -66,19 +87,22 @@ if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
     now_str = datetime.now(jst).strftime('%H:%M')
     
-    print("📋 プライム市場リスト取得中...")
-    targets = get_prime_tickers()
+    try:
+        targets = get_prime_tickers()
+    except Exception as e:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚨 エラー: {e}"})
+        exit()
     
     requests.post(DISCORD_WEBHOOK_URL, json={
         "username": "株監視AI教授", 
-        "content": f"📡 **プライム市場({len(targets)}社) 哨戒開始** ({now_str})"
+        "content": f"🚀 **プライム市場({len(targets)}社) 巡回開始** ({now_str})"
     })
     
-    found_list = []
+    found_count = 0
     for i, (ticker, name) in enumerate(targets.items()):
         res = analyze_stock(ticker, name)
         if res:
-            found_list.append(res)
+            found_count += 1
             emoji = "⚡" if res['type'] == "BUY" else "🚀"
             title = "【反発期待】" if res['type'] == "BUY" else "【高値警戒】"
             content = (
@@ -90,8 +114,7 @@ if __name__ == "__main__":
             requests.post(DISCORD_WEBHOOK_URL, json={"username": "株監視AI教授", "content": content})
             time.sleep(1)
 
-    summary = (
-        f"✅ **哨戒完了** ({now_str})\n"
-        f"└ スキャン: {len(targets)}件 / 合致: {len(found_list)}件"
-    )
-    requests.post(DISCORD_WEBHOOK_URL, json={"username": "株監視AI教授", "content": summary})
+    requests.post(DISCORD_WEBHOOK_URL, json={
+        "username": "株監視AI教授", 
+        "content": f"✅ **巡回完了** ({now_str})\n└ スキャン: {len(targets)}件 / 合致: {found_count}件"
+    })
