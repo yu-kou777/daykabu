@@ -30,7 +30,6 @@ def get_latest_prime_list():
             if 'data_j.xls' in a['href']:
                 xls_path = a['href']
                 break
-        if not xls_path: raise Exception("Excelリンク未検出")
         full_url = "https://www.jpx.co.jp" + xls_path
         resp = requests.get(full_url, headers=headers)
         df = pd.read_excel(io.BytesIO(resp.content), dtype={'コード': str})
@@ -45,14 +44,14 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **トレンド＆反転哨戒開始({len(ticker_list)}社)** ({now_str})"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **厳選・長期トレンド哨戒開始({len(ticker_list)}社)** ({now_str})"})
 
-    # 分割ダウンロードでBAN対策
     chunk_size = 400
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
-        data_chunk = yf.download(chunk, period="6mo", interval="1d", group_by='ticker', threads=True)
+        # MA200計算のため期間を2年に延長
+        data_chunk = yf.download(chunk, period="2y", interval="1d", group_by='ticker', threads=True)
         all_data = pd.concat([all_data, data_chunk], axis=1)
         time.sleep(5)
 
@@ -60,7 +59,13 @@ if __name__ == "__main__":
     for ticker in ticker_list:
         try:
             df = all_data[ticker].dropna()
-            if len(df) < 61: continue # MA60のために長めのデータが必要
+            if len(df) < 201: continue
+
+            curr_price = df['Close'].iloc[-1]
+            
+            # 【追加条件】5円刻みの価格帯（3,001円〜30,000円）に絞り込み
+            if not (3000 < curr_price <= 30000):
+                continue
 
             # 指標計算
             df['RSI'] = ta.rsi(df['Close'], length=14)
@@ -68,6 +73,7 @@ if __name__ == "__main__":
             df['MA5'] = ta.sma(df['Close'], length=5)
             df['MA20'] = ta.sma(df['Close'], length=20)
             df['MA60'] = ta.sma(df['Close'], length=60)
+            df['MA200'] = ta.sma(df['Close'], length=200)
             
             curr = df.iloc[-1]
             prev = df.iloc[-2]
@@ -75,7 +81,7 @@ if __name__ == "__main__":
             signal = None
             reason = []
 
-            # 1. 逆張り/過熱条件 (優先)
+            # 1. 逆張り/過熱条件
             if curr['RCI9'] <= -50:
                 signal = "🔵【買い検討(安値圏)】"
                 reason.append("RCI -50以下")
@@ -83,24 +89,26 @@ if __name__ == "__main__":
                 signal = "💰【利確準備(過熱)】"
                 reason.append("RCI95以上 & RSI90以上")
             
-            # 2. 上記に当てはまらない場合、トレンドを判定
+            # 2. 長期トレンド判定（MA200を含むパーフェクトオーダーの上昇/下降）
             else:
-                ma_rising = (curr['MA5'] > prev['MA5']) and (curr['MA20'] > prev['MA20']) and (curr['MA60'] > prev['MA60'])
-                ma_falling = (curr['MA5'] < prev['MA5']) and (curr['MA20'] < prev['MA20']) and (curr['MA60'] < prev['MA60'])
+                # すべてのMAが前日より上昇
+                ma_rising = all([curr[ma] > prev[ma] for ma in ['MA5', 'MA20', 'MA60', 'MA200']])
+                # すべてのMAが前日より下降
+                ma_falling = all([curr[ma] < prev[ma] for ma in ['MA5', 'MA20', 'MA60', 'MA200']])
                 
                 if ma_rising:
-                    signal = "🔥【強い買い(三役上昇)】"
-                    reason.append("MA5/20/60 すべて上昇")
+                    signal = "💎【極・買い(200日込上昇)】"
+                    reason.append("全MA(5/20/60/200)上昇")
                 elif ma_falling:
-                    signal = "💀【強い売り(三役下降)】"
-                    reason.append("MA5/20/60 すべて下降")
+                    signal = "🌪️【極・売り(200日込下降)】"
+                    reason.append("全MA(5/20/60/200)下降")
 
             if signal:
                 found_count += 1
                 content = (
                     f"🦅 **{signal}**\n"
                     f"**{ticker_map[ticker]}({ticker})**\n"
-                    f"└ 価格: {int(curr['Close'])}円 / RSI: {round(curr['RSI'], 1)}\n"
+                    f"└ 価格: {int(curr_price)}円 / RSI: {round(curr['RSI'], 1)}\n"
                     f"└ 理由: {' / '.join(reason)}"
                 )
                 requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
@@ -108,4 +116,4 @@ if __name__ == "__main__":
         except:
             continue
 
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒完了** 合致: {found_count}件"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **厳選哨戒完了** 合致: {found_count}件"})
