@@ -19,14 +19,6 @@ def calculate_rci(series, period):
         return (1 - (6 * d) / (n * (n**2 - 1))) * 100
     return series.rolling(window=n).apply(rci_func)
 
-def is_peak_down(series):
-    if len(series) < 4: return False
-    return (series.iloc[-2] > series.iloc[-3]) and (series.iloc[-2] > series.iloc[-1])
-
-def is_trough_up(series):
-    if len(series) < 4: return False
-    return (series.iloc[-2] < series.iloc[-3]) and (series.iloc[-2] < series.iloc[-1])
-
 def get_latest_prime_list():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -53,51 +45,67 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **哨戒開始({len(ticker_list)}社)** ({now_str})"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **トレンド＆反転哨戒開始({len(ticker_list)}社)** ({now_str})"})
 
-    # --- 改良：分割ダウンロード ---
+    # 分割ダウンロードでBAN対策
     chunk_size = 400
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
-        print(f"📦 スキャン中... {i} ～ {i+len(chunk)}")
         data_chunk = yf.download(chunk, period="6mo", interval="1d", group_by='ticker', threads=True)
         all_data = pd.concat([all_data, data_chunk], axis=1)
-        time.sleep(5) # 5秒休憩してBANを防ぐ
+        time.sleep(5)
 
     found_count = 0
     for ticker in ticker_list:
         try:
             df = all_data[ticker].dropna()
-            if len(df) < 30: continue
-            df.ta.rsi(length=14, append=True)
-            df['RCI9'] = calculate_rci(df['Close'], 9)
-            df['RCI26'] = calculate_rci(df['Close'], 26)
-            curr, prev = df.iloc[-1], df.iloc[-2]
+            if len(df) < 61: continue # MA60のために長めのデータが必要
 
-            peak_down = is_peak_down(df['RSI_14']) and is_peak_down(df['RCI9'])
-            trough_up = is_trough_up(df['RSI_14']) and is_trough_up(df['RCI9'])
-            gc = (prev['RCI9'] <= prev['RCI26']) and (curr['RCI9'] > curr['RCI26'])
-            dc = (prev['RCI9'] >= prev['RCI26']) and (curr['RCI9'] < curr['RCI26'])
+            # 指標計算
+            df['RSI'] = ta.rsi(df['Close'], length=14)
+            df['RCI9'] = calculate_rci(df['Close'], 9)
+            df['MA5'] = ta.sma(df['Close'], length=5)
+            df['MA20'] = ta.sma(df['Close'], length=20)
+            df['MA60'] = ta.sma(df['Close'], length=60)
+            
+            curr = df.iloc[-1]
+            prev = df.iloc[-2]
 
             signal = None
             reason = []
-            if peak_down or dc:
-                signal = "🔻【売り警戒】"
-                if peak_down: reason.append("RSI/RCI同期山")
-                if dc: reason.append("RCIデッドクロス")
-            elif trough_up or gc:
-                signal = "🔥【買い検討】"
-                if trough_up: reason.append("RSI/RCI同期谷")
-                if gc: reason.append("RCIゴールデンクロス")
+
+            # 1. 逆張り/過熱条件 (優先)
+            if curr['RCI9'] <= -50:
+                signal = "🔵【買い検討(安値圏)】"
+                reason.append("RCI -50以下")
+            elif curr['RCI9'] >= 95 and curr['RSI'] >= 90:
+                signal = "💰【利確準備(過熱)】"
+                reason.append("RCI95以上 & RSI90以上")
+            
+            # 2. 上記に当てはまらない場合、トレンドを判定
+            else:
+                ma_rising = (curr['MA5'] > prev['MA5']) and (curr['MA20'] > prev['MA20']) and (curr['MA60'] > prev['MA60'])
+                ma_falling = (curr['MA5'] < prev['MA5']) and (curr['MA20'] < prev['MA20']) and (curr['MA60'] < prev['MA60'])
+                
+                if ma_rising:
+                    signal = "🔥【強い買い(三役上昇)】"
+                    reason.append("MA5/20/60 すべて上昇")
+                elif ma_falling:
+                    signal = "💀【強い売り(三役下降)】"
+                    reason.append("MA5/20/60 すべて下降")
 
             if signal:
                 found_count += 1
-                content = f"🦅 **{signal}**\n**{ticker_map[ticker]}({ticker})**\n└ 価格: {int(curr['Close'])}円 / RSI: {round(curr['RSI_14'], 1)}\n└ 理由: {' / '.join(reason)}"
+                content = (
+                    f"🦅 **{signal}**\n"
+                    f"**{ticker_map[ticker]}({ticker})**\n"
+                    f"└ 価格: {int(curr['Close'])}円 / RSI: {round(curr['RSI'], 1)}\n"
+                    f"└ 理由: {' / '.join(reason)}"
+                )
                 requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
                 time.sleep(1)
         except:
             continue
 
     requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒完了** 合致: {found_count}件"})
-
