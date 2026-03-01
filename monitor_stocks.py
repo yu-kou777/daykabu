@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def calculate_rci(series, period):
-    """RCI(順位相関指数)を計算する関数"""
+    """RCI(順位相関指数)を計算"""
     n = period
     rank_period = pd.Series(range(n, 0, -1))
     def rci_func(x):
@@ -19,51 +19,55 @@ def calculate_rci(series, period):
     return series.rolling(window=n).apply(rci_func)
 
 def get_prime_tickers():
-    """プライム市場の銘柄リストを取得"""
+    """監視対象の取得"""
     if os.path.exists('prime_list.csv'):
         df = pd.read_csv('prime_list.csv')
         return {f"{str(c).split('.')[0]}.T": n for c, n in zip(df['コード'], df['銘柄名'])}
-    
-    # テスト用リスト
-    return {
-        "9101.T": "日本郵船", "8035.T": "東エレク", 
-        "9984.T": "ソフトバンクG", "7203.T": "トヨタ",
-        "5401.T": "日本製鉄", "8306.T": "三菱UFJ"
-    }
+    # デフォルトリスト（テスト用）
+    return {"9101.T": "日本郵船", "8035.T": "東エレク", "9984.T": "SBG", "7203.T": "トヨタ"}
 
 def analyze_stock(ticker, name):
     try:
         tkr = yf.Ticker(ticker)
         df = tkr.history(period="1y", interval="1d")
-        if len(df) < 200: return None
+        if len(df) < 26: return None
 
-        # 指標計算
-        df['MA60'] = df['Close'].rolling(window=60).mean()
-        df['MA200'] = df['Close'].rolling(window=200).mean()
-        df.ta.rsi(length=14, append=True)
+        # --- 指標計算 ---
+        # 25日移動平均線と乖離率
+        df['MA25'] = df['Close'].rolling(window=25).mean()
+        curr_price = df['Close'].iloc[-1]
+        kairi = ((curr_price - df['MA25'].iloc[-1]) / df['MA25'].iloc[-1]) * 100
+        
+        # RCI (短期9日, 長期26日)
         df['RCI9'] = calculate_rci(df['Close'], 9)
         df['RCI26'] = calculate_rci(df['Close'], 26)
 
         curr = df.iloc[-1]
         prev = df.iloc[-2]
         
-        # 判定ロジック
-        pbr = tkr.info.get('priceToBook', 99.0)
-        is_low_pbr = pbr <= 1.0
+        # --- 判定ロジック ---
+        signal_type = None
         
-        # RSI・RCI 3日以内に90以上
-        recent_window = df.tail(3)
-        is_overheated = (recent_window['RSI_14'].max() >= 90) and (recent_window['RCI9'].max() >= 90)
+        # 1. 買いシグナル：25日乖離が -10%以下 ＋ RCIゴールデンクロス
+        if kairi <= -10.0 and (curr['RCI9'] > curr['RCI26']) and (curr['RCI9'] > prev['RCI9']):
+            signal_type = "BUY"
+            
+        # 2. 売りシグナル：25日乖離が +10%以上 ＋ RCIデッドクロス(短期が下向き)
+        elif kairi >= 10.0 and (curr['RCI9'] < curr['RCI26']) and (curr['RCI9'] < prev['RCI9']):
+            signal_type = "SELL"
 
-        # RCIゴールデンクロス
-        rci_gc = (curr['RCI9'] > curr['RCI26']) and (curr['RCI9'] > prev['RCI9'])
+        # --- PBR評価 (情報として扱う) ---
+        pbr = tkr.info.get('priceToBook', 0)
+        if pbr == 0: pbr_eval = "取得不能"
+        elif pbr < 1.0: pbr_eval = "✅割安 (1.0倍以下)"
+        else: pbr_eval = f"基準超 ({round(pbr, 2)}倍)"
 
-        if is_low_pbr and is_overheated and rci_gc:
+        if signal_type:
             return {
-                "name": name, "code": ticker, "price": int(curr['Close']),
-                "pbr": round(pbr, 2), "rsi": round(curr['RSI_14'], 1), 
-                "rci_s": round(curr['RCI9'], 1),
-                "ma60": "上昇📈" if curr['MA60'] > prev['MA60'] else "下降📉"
+                "type": signal_type,
+                "name": name, "code": ticker, "price": int(curr_price),
+                "kairi": round(kairi, 1), "pbr": round(pbr, 2), "pbr_eval": pbr_eval,
+                "rci_s": round(curr['RCI9'], 1), "rci_l": round(curr['RCI26'], 1)
             }
         return None
     except:
@@ -72,36 +76,38 @@ def analyze_stock(ticker, name):
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
     now_str = datetime.now(jst).strftime('%H:%M')
-    print(f"🕵️ プライム市場 大引け前哨戒開始: {now_str}")
+    print(f"🕵️ 大引け前 両方向哨戒開始: {now_str}")
     
     targets = get_prime_tickers()
-    total_targets = len(targets)
-    found_list = []
+    found_buy = 0
+    found_sell = 0
     
     for ticker, name in targets.items():
         res = analyze_stock(ticker, name)
         if res:
-            found_list.append(res)
-            # 合致銘柄の個別通知
+            if res['type'] == "BUY":
+                found_buy += 1
+                emoji, title, comment = "⚡", "【反発期待・買い検討】", "売られすぎからの反発シグナルです。"
+            else:
+                found_sell += 1
+                emoji, title, comment = "🚀", "【高値警戒・利益確定】", "買われすぎからの天井打ちシグナルです。"
+
             content = (
-                f"🦅 **AI監視レポート: ヒット銘柄**\n"
-                f"🎯 **{res['name']}({res['code']})**\n"
-                f"└ 価格: {res['price']}円 / PBR: {res['pbr']}倍\n"
-                f"└ RSI: {res['rsi']} / RCI短期: {res['rci_s']}\n"
-                f"└ MA60トレンド: {res['ma60']}\n"
-                f"📢 **大引け買い検討条件に合致。**"
+                f"🦅 **AI監視レポート: {title}**\n"
+                f"{emoji} **{res['name']}({res['code']})**\n"
+                f"└ 価格: {res['price']}円 / **25日乖離: {res['kairi']}%**\n"
+                f"└ PBR評価: {res['pbr_eval']}\n"
+                f"└ RCI短期: {res['rci_s']} / 長期: {res['rci_l']}\n"
+                f"📢 {comment}"
             )
             requests.post(DISCORD_WEBHOOK_URL, json={"username": "株監視AI教授", "content": content})
-            time.sleep(1.5)
+            time.sleep(1)
 
-    # --- 0件でも届く完了報告 ---
-    status_emoji = "✅" if len(found_list) > 0 else "💤"
-    summary_content = (
-        f"{status_emoji} **大引け前スキャン完了報告** ({now_str})\n"
-        f"└ スキャン銘柄数: {total_targets}件\n"
-        f"└ 条件合致数: **{len(found_list)}件**\n"
-        f"{'---' if len(found_list) > 0 else '📢 本日、条件に合致する極めて強い低PBR銘柄は見つかりませんでした。'}"
+    # --- 完了報告 ---
+    summary = (
+        f"✅ **大引け前スキャン完了** ({now_str})\n"
+        f"└ スキャン数: {len(targets)}件\n"
+        f"└ 買合致: **{found_buy}件** / 売合致: **{found_sell}件**\n"
+        f"{'📢 注目銘柄があります。取引の参考にしてください。' if (found_buy + found_sell) > 0 else '📢 強いシグナルが出ている銘柄は見つかりませんでした。'}"
     )
-    requests.post(DISCORD_WEBHOOK_URL, json={"username": "株監視AI教授", "content": summary_content})
-    
-    print(f"🏁 哨戒完了。合致 {len(found_list)} 件。")
+    requests.post(DISCORD_WEBHOOK_URL, json={"username": "株監視AI教授", "content": summary})
