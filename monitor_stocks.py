@@ -5,6 +5,7 @@ import requests
 import time
 import io
 import re
+import os
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 
@@ -19,11 +20,18 @@ def calculate_rci(series, period):
         return (1 - (6 * d) / (n * (n**2 - 1))) * 100
     return series.rolling(window=n).apply(rci_func)
 
+def is_peak_down(series):
+    if len(series) < 4: return False
+    return (series.iloc[-2] > series.iloc[-3]) and (series.iloc[-2] > series.iloc[-1])
+
+def is_trough_up(series):
+    if len(series) < 4: return False
+    return (series.iloc[-2] < series.iloc[-3]) and (series.iloc[-2] < series.iloc[-1])
+
 def get_latest_prime_list():
-    """JPXのページから最新のExcelリンクを自動検出して読み込む"""
+    """JPXのページから最新のExcelリンクを検出し、英数字コードに対応して読み込む"""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        # JPXの統計ページから最新のdata_j.xlsを探す
         base_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
         res = requests.get(base_url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -35,16 +43,20 @@ def get_latest_prime_list():
                 break
         
         if not xls_path:
-            raise Exception("Excelリンクの自動検出に失敗しました")
+            raise Exception("Excelリンクが見つかりません")
             
         full_url = "https://www.jpx.co.jp" + xls_path
         print(f"📡 最新名簿をダウンロード中: {full_url}")
         
         resp = requests.get(full_url, headers=headers)
-        df = pd.read_excel(io.BytesIO(resp.content))
+        # コード列を文字列(str)として読み込む設定を追加
+        df = pd.read_excel(io.BytesIO(resp.content), dtype={'コード': str})
+        
         # プライム市場のみ抽出
         prime_df = df[df['市場・商品区分'].str.contains('プライム', na=False)]
-        return {f"{int(row['コード'])}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
+        
+        # 英数字コードに対応（int変換を削除）
+        return {f"{row['コード']}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
     except Exception as e:
         print(f"❌ リスト取得エラー: {e}")
         return {"9101.T": "日本郵船", "6481.T": "THK", "7203.T": "トヨタ"}
@@ -56,7 +68,7 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    # 開始通知
+    # 開始通知（16XX社と表示されれば成功です！）
     requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **プライム市場({len(ticker_list)}社) 高精度哨戒を開始** ({now_str})"})
 
     # データ一括取得
@@ -68,7 +80,6 @@ if __name__ == "__main__":
             df = all_data[ticker].dropna()
             if len(df) < 30: continue
 
-            # 指標計算
             df.ta.rsi(length=14, append=True)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['RCI26'] = calculate_rci(df['Close'], 26)
@@ -76,10 +87,8 @@ if __name__ == "__main__":
             curr, prev = df.iloc[-1], df.iloc[-2]
 
             # 同期ピーク判定
-            peak_down = (prev['RSI_14'] > df['RSI_14'].iloc[-3]) and (prev['RSI_14'] > curr['RSI_14']) and \
-                        (prev['RCI9'] > df['RCI9'].iloc[-3]) and (prev['RCI9'] > curr['RCI9'])
-            trough_up = (prev['RSI_14'] < df['RSI_14'].iloc[-3]) and (prev['RSI_14'] < curr['RSI_14']) and \
-                        (prev['RCI9'] < df['RCI9'].iloc[-3]) and (prev['RCI9'] < curr['RCI9'])
+            peak_down = is_peak_down(df['RSI_14']) and is_peak_down(df['RCI9'])
+            trough_up = is_trough_up(df['RSI_14']) and is_trough_up(df['RCI9'])
             
             # RCIクロス
             gc = (prev['RCI9'] <= prev['RCI26']) and (curr['RCI9'] > curr['RCI26'])
