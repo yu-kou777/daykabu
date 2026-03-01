@@ -3,7 +3,7 @@ name: Stock Monitor
 on:
   schedule:
     - cron: '50 5 * * 1-5' # 日本時間 14:50
-  workflow_dispatch:
+  workflow_dispatch:      # 手動実行ボタン用
 
 jobs:
   build:
@@ -17,6 +17,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install yfinance pandas pandas-ta requests openpyxl xlrd lxml
+          pip install yfinance pandas pandas-ta requests openpyxl xlrd lxml beautifulsoup4
       - name: Run monitor
         run: python monitor_stocks.py
