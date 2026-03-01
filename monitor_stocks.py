@@ -27,17 +27,17 @@ def is_trough_up(series):
     return (series.iloc[-2] < series.iloc[-3]) and (series.iloc[-2] < series.iloc[-1])
 
 def get_latest_prime_list():
-    """JPXから最新の名簿を取得（URLエラー対策強化版）"""
-    # JPXのExcelはURLが頻繁に変わるため、複数の候補を試します
+    """JPXから最新の名簿を取得（エラー報告付き）"""
+    # JPXの最新URL候補
     urls = [
         "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls",
         "https://www.jpx.co.jp/markets/statistics-banner/quote/tvdivq0000001vg2-att/data_j.xls"
     ]
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
+    last_error = ""
     for url in urls:
         try:
-            print(f"📡 リスト取得試行中: {url}")
             resp = requests.get(url, headers=headers, timeout=20)
             if resp.status_code == 200:
                 df_jpx = pd.read_excel(io.BytesIO(resp.content))
@@ -47,10 +47,11 @@ def get_latest_prime_list():
                 if len(tickers) > 100:
                     return tickers
         except Exception as e:
-            print(f"⚠️ {url} で取得失敗: {e}")
+            last_error = str(e)
             continue
     
-    # すべて失敗した場合、空を返してエラー通知させる
+    # 失敗した場合はDiscordに原因を報告
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚨 **名簿取得エラー**: {last_error}\nURLが古いか、ライブラリ(openpyxl)が不足しています。"})
     return None
 
 if __name__ == "__main__":
@@ -60,24 +61,26 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     
     if not ticker_map:
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": "🚨 **重大エラー**: JPXから名簿を取得できませんでした。サイトの構成が変わった可能性があります。"})
+        # 3銘柄で無理やり動かさず、ここで終了させる
         exit()
 
     ticker_list = list(ticker_map.keys())
     
-    # 開始通知（ここで銘柄数を確認してください）
+    # 開始通知
     requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **プライム市場({len(ticker_list)}社) 高精度哨戒を開始** ({now_str})"})
 
-    # データ一括取得（1600件はここで数分かかります）
-    all_data = yf.download(ticker_list, period="6mo", interval="1d", group_by='ticker', threads=True)
+    # データ一括取得（1600件は数分かかります）
+    # threads=True で高速化
+    try:
+        all_data = yf.download(ticker_list, period="6mo", interval="1d", group_by='ticker', threads=True)
+    except Exception as e:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚨 **データ取得エラー**: {e}"})
+        exit()
 
     found_count = 0
-    # ヒットした銘柄を格納するリスト
-    results = []
-
     for ticker in ticker_list:
         try:
-            # yfinanceのデータ形式変更に対応
+            # yfinanceのデータ形式に対応
             df = all_data[ticker].dropna()
             if df.empty or len(df) < 30: continue
 
@@ -89,6 +92,7 @@ if __name__ == "__main__":
 
             peak_down = is_peak_down(df['RSI_14']) and is_peak_down(df['RCI9'])
             trough_up = is_trough_up(df['RSI_14']) and is_trough_up(df['RCI9'])
+            
             gc = (prev['RCI9'] <= prev['RCI26']) and (curr['RCI9'] > curr['RCI26'])
             dc = (prev['RCI9'] >= prev['RCI26']) and (curr['RCI9'] < curr['RCI26'])
 
@@ -112,8 +116,8 @@ if __name__ == "__main__":
                     f"└ 理由: {' / '.join(reason)}"
                 )
                 requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
-                time.sleep(1) # Discordの連投制限対策
+                time.sleep(1) 
         except:
             continue
 
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒ミッション完了** 合致: {found_count}件"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"✅ **哨戒完了** 合致: {found_count}件"})
