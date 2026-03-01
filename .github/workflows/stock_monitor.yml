@@ -1,26 +1,4 @@
-name: Stock Monitor
-
-on:
-  schedule:
-    # 日本時間 14:50 (大引け10分前) に実行
-    - cron: '50 5 * * 1-5'
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12' # ここを3.10から3.12に修正
-          cache: 'pip'
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install yfinance pandas pandas-ta requests
-      - name: Run monitor
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python monitor_stocks.py
+          pip install yfinance pandas pandas-ta requests xlrd
