@@ -55,9 +55,9 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🕵️ **トレンド×シグナル厳選哨戒** ({now_str})"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🕵️ **スイング哨戒開始** ({now_str})"})
 
-    up_signals, down_signals = [], []
+    up_signals, down_signals, profit_signals = [], [], []
     total_scanned = 0
 
     chunk_size = 400
@@ -77,7 +77,7 @@ if __name__ == "__main__":
             prev = df.iloc[-2]
             price = int(curr['Close'])
 
-            # --- スイング母集団フィルター ---
+            # 母集団フィルター
             if not (3000 < price <= 30000): continue
             avg_value = (df['Close'] * df['Volume']).tail(25).mean()
             if avg_value < 1_500_000_000: continue
@@ -86,7 +86,7 @@ if __name__ == "__main__":
 
             total_scanned += 1
 
-            # テクニカル指標
+            # テクニカル
             df['RSI'] = ta.rsi(df['Close'], length=14)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['MA5'] = ta.sma(df['Close'], length=5)
@@ -96,31 +96,34 @@ if __name__ == "__main__":
             
             curr, prev = df.iloc[-1], df.iloc[-2]
             name = ticker_map[ticker]
+            # チャートリンク
+            chart_url = f"https://finance.yahoo.co.jp/quote/{ticker}"
 
-            # トレンド判定
             is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
             is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
 
-            # シグナル判定
             tokubai = (curr['RSI'] <= 10 and curr['RCI9'] <= -70)
             kaimashi = (curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50)
             rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 80)
 
-            # 条件合致時のみリストへ
             if tokubai or kaimashi or rikaku:
                 sig_tag = "🚨【特買い】" if tokubai else ("✨【買い増し】" if kaimashi else "💰【利確】")
-                info = f"{sig_tag} {name}({ticker}) : {price}円 (RSI:{round(curr['RSI'],1)} RCI:{round(curr['RCI9'],1)})"
+                # リンク付きメッセージ
+                info = f"{sig_tag} {name}({ticker}) : {price}円 [RSI:{round(curr['RSI'],1)} RCI:{round(curr['RCI9'],1)}]\n└ [📈 チャート]({chart_url})"
                 
                 if is_uptrend:
                     up_signals.append(f"📈上昇中 ➔ {info}")
                 elif is_downtrend:
                     down_signals.append(f"📉下降中 ➔ {info}")
+                else:
+                    profit_signals.append(info)
 
         except:
             continue
 
-    summary = f"📊 **哨戒結果**\n母集団: {total_scanned} 社 / 合致シグナル: {len(up_signals) + len(down_signals)} 件"
+    summary = f"📊 **哨戒結果**\n母集団: {total_scanned} 社 / 合致: {len(up_signals) + len(down_signals) + len(profit_signals)} 件"
     requests.post(DISCORD_WEBHOOK_URL, json={"content": summary})
 
-    send_discord("🔥 強上昇トレンド × シグナル合致", up_signals)
-    send_discord("🌪️ 強下降トレンド × シグナル合致", down_signals)
+    send_discord("🔥 強上昇トレンド × シグナル", up_signals)
+    send_discord("🌪️ 強下降トレンド × シグナル", down_signals)
+    send_discord("💰 その他シグナル", profit_signals)
