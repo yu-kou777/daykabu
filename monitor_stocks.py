@@ -55,10 +55,9 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🕵️ **厳選・戦略哨戒ミッション開始** ({now_str})"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🕵️ **トレンド×シグナル厳選哨戒** ({now_str})"})
 
-    # 通知用リスト
-    up_signals, down_signals, profit_signals = [], [], []
+    up_signals, down_signals = [], []
     total_scanned = 0
 
     chunk_size = 400
@@ -78,12 +77,12 @@ if __name__ == "__main__":
             prev = df.iloc[-2]
             price = int(curr['Close'])
 
-            # --- スイング厳選フィルター ---
-            if not (3000 < price <= 30000): continue # 価格帯
+            # --- スイング母集団フィルター ---
+            if not (3000 < price <= 30000): continue
             avg_value = (df['Close'] * df['Volume']).tail(25).mean()
-            if avg_value < 1_500_000_000: continue # 売買代金15億
+            if avg_value < 1_500_000_000: continue
             avg_volatility = ((df['High'] - df['Low']) / df['Close']).tail(25).mean()
-            if avg_volatility < 0.020: continue # ボラ2%
+            if avg_volatility < 0.020: continue
 
             total_scanned += 1
 
@@ -101,40 +100,27 @@ if __name__ == "__main__":
             # トレンド判定
             is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
             is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
-            trend_tag = "📈上昇" if is_uptrend else ("📉下降" if is_downtrend else "平時")
 
-            # 買い判定ロジック
-            # 当日または前日が条件に合致するか判定
-            kaimashi = (curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50)
+            # シグナル判定
             tokubai = (curr['RSI'] <= 10 and curr['RCI9'] <= -70)
-            # 利確判定ロジック
-            profit_take = (curr['RCI9'] >= 95 and curr['RSI'] >= 90)
+            kaimashi = (curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50)
+            rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 80)
 
-            # メッセージ整形
-            status_text = ""
-            if tokubai: status_text = "🚨【特買い】"
-            elif kaimashi: status_text = "✨【買い増し】"
-            elif profit_take: status_text = "💰【利確】"
-
-            if status_text:
-                info = f"{status_text} {name}({ticker}) : {price}円 [{trend_tag}] (RSI:{round(curr['RSI'],1)} RCI:{round(curr['RCI9'],1)})"
+            # 条件合致時のみリストへ
+            if tokubai or kaimashi or rikaku:
+                sig_tag = "🚨【特買い】" if tokubai else ("✨【買い増し】" if kaimashi else "💰【利確】")
+                info = f"{sig_tag} {name}({ticker}) : {price}円 (RSI:{round(curr['RSI'],1)} RCI:{round(curr['RCI9'],1)})"
+                
                 if is_uptrend:
-                    up_signals.append(info)
+                    up_signals.append(f"📈上昇中 ➔ {info}")
                 elif is_downtrend:
-                    down_signals.append(info)
-                else:
-                    # トレンドに属さないがシグナルが出たもの
-                    profit_signals.append(info)
+                    down_signals.append(f"📉下降中 ➔ {info}")
 
         except:
             continue
 
-    # レポート送信
-    summary = f"📊 **スイング厳選結果**\n候補1,600社 ➔ フィルター通過: **{total_scanned}** 社"
+    summary = f"📊 **哨戒結果**\n母集団: {total_scanned} 社 / 合致シグナル: {len(up_signals) + len(down_signals)} 件"
     requests.post(DISCORD_WEBHOOK_URL, json={"content": summary})
 
-    send_discord("📈 上昇トレンド中のシグナル", up_signals)
-    send_discord("📉 下降トレンド中のシグナル", down_signals)
-    send_discord("💰 その他のシグナル（利確など）", profit_signals)
-
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": "✅ **哨戒ミッション完了**"})
+    send_discord("🔥 強上昇トレンド × シグナル合致", up_signals)
+    send_discord("🌪️ 強下降トレンド × シグナル合致", down_signals)
