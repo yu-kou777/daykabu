@@ -38,10 +38,7 @@ def get_latest_prime_list():
         return {"9101.T": "日本郵船", "6481.T": "THK"}
 
 def send_discord(title, stock_list):
-    """リスト形式でDiscordに送信（2000文字制限対策）"""
-    if not stock_list:
-        return
-    
+    if not stock_list: return
     header = f"【{title}】\n"
     content = ""
     for item in stock_list:
@@ -49,7 +46,6 @@ def send_discord(title, stock_list):
             requests.post(DISCORD_WEBHOOK_URL, json={"content": header + content})
             content = ""
         content += item + "\n"
-    
     if content:
         requests.post(DISCORD_WEBHOOK_URL, json={"content": header + content})
 
@@ -59,13 +55,10 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🔎 **パトロール開始** ({now_str})\n対象: プライム市場 {len(ticker_list)}社 / 株価3,001円～30,000円"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🕵️ **スイング特化型・厳選パトロール開始** ({now_str})"})
 
-    # 結果格納用
-    buy_signals = []      # 押し目買い候補
-    strong_uptrend = []   # 強い上昇トレンド
-    profit_take = []     # 利確・過熱警戒
-    strong_downtrend = [] # 強い下降トレンド
+    buy_signals, strong_uptrend, profit_take, strong_downtrend = [], [], [], []
+    total_scanned = 0
 
     chunk_size = 400
     all_data = pd.DataFrame()
@@ -80,8 +73,23 @@ if __name__ == "__main__":
             df = all_data[ticker].dropna()
             if len(df) < 201: continue
             
-            curr_price = df['Close'].iloc[-1]
-            if not (3000 < curr_price <= 30000): continue
+            curr = df.iloc[-1]
+            prev = df.iloc[-2]
+            price = int(curr['Close'])
+
+            # --- スイング向け厳選フィルター ---
+            # 1. 価格帯（3,001円～30,000円）
+            if not (3000 < price <= 30000): continue
+            
+            # 2. 流動性（直近25日平均売買代金が15億円以上）
+            avg_value = (df['Close'] * df['Volume']).tail(25).mean()
+            if avg_value < 1_500_000_000: continue
+            
+            # 3. ボラティリティ（直近25日の平均値幅が2.0%以上）
+            avg_volatility = ((df['High'] - df['Low']) / df['Close']).tail(25).mean()
+            if avg_volatility < 0.020: continue
+
+            total_scanned += 1 # 厳選フィルターを通過した銘柄をカウント
 
             # 指標計算
             df['RSI'] = ta.rsi(df['Close'], length=14)
@@ -91,42 +99,30 @@ if __name__ == "__main__":
             df['MA60'] = ta.sma(df['Close'], length=60)
             df['MA200'] = ta.sma(df['Close'], length=200)
             
-            curr = df.iloc[-1]
-            prev = df.iloc[-2]
+            curr, prev = df.iloc[-1], df.iloc[-2]
             name = ticker_map[ticker]
-            price = int(curr_price)
 
-            # トレンド判定
             is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
             is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
 
-            # --- カテゴリ分け ---
-            
-            # 1. 【最優先】上昇トレンド中の押し目買い (RSI < 50 かつ RCI底打ち)
-            if is_uptrend and curr['RSI'] < 50 and curr['RCI9'] < -50:
-                buy_signals.append(f"✨ {name}({ticker}) : {price}円 (RSI:{round(curr['RSI'],1)} RCI:{round(curr['RCI9'],1)})")
-            
-            # 2. 過熱・利確警戒
+            # シグナル判定
+            if is_uptrend and curr['RSI'] < 45 and curr['RCI9'] < -50:
+                buy_signals.append(f"✨ {name}({ticker}) : {price}円 (RSI:{round(curr['RSI'],1)})")
             elif curr['RCI9'] > 90 and curr['RSI'] > 80:
                 profit_take.append(f"💰 {name}({ticker}) : {price}円 (過熱)")
-
-            # 3. 強い上昇 (パーフェクトオーダー)
-            elif is_uptrend:
-                # 前日比でMAが伸びているもの
-                if curr['MA5'] > prev['MA5']:
-                    strong_uptrend.append(f"🔥 {name}({ticker}) : {price}円")
-
-            # 4. 強い下降
+            elif is_uptrend and curr['MA5'] > prev['MA5']:
+                strong_uptrend.append(f"🔥 {name}({ticker}) : {price}円")
             elif is_downtrend:
                 strong_downtrend.append(f"💀 {name}({ticker}) : {price}円")
 
         except:
             continue
 
-    # --- まとめて通知 ---
-    send_discord("✨ 押し目買い候補 (上昇トレンド×安値圏)", buy_signals)
-    send_discord("🔥 強い上昇トレンド (パーフェクトオーダー)", strong_uptrend)
-    send_discord("💰 利確検討 (高値圏)", profit_take)
-    send_discord("💀 強い下降トレンド (三役下降)", strong_downtrend)
+    # 最初に件数を報告
+    summary = f"📊 **スイング厳選結果**\n対象1,600社中、フィルター通過: **{total_scanned}** 社"
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": summary})
 
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": "✅ **パトロール完了**"})
+    send_discord("✨ 押し目買い候補 (上昇トレンド×安値圏)", buy_signals)
+    send_discord("🔥 強い上昇トレンド", strong_uptrend)
+    send_discord("💰 利確検討", profit_take)
+    send_discord("💀 強い下降トレンド", strong_downtrend)
