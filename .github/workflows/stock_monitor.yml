@@ -2,9 +2,9 @@ name: Stock Monitor
 
 on:
   schedule:
-    # 06:00 UTC = 15:00 JST
-    - cron: '0 6 * * 1-5'
-  workflow_dispatch: # 手動で「Run workflow」を押すためのボタン
+    # 日本時間 14:30（UTC 05:30）に起動予約。遅延しても15:20までには終わる計算です。
+    - cron: '30 5 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   build:
