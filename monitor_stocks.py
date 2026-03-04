@@ -12,7 +12,6 @@ from bs4 import BeautifulSoup
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def calculate_rci(series, period):
-    """RCIの計算（精密版）"""
     n = period
     def rci_func(x):
         if len(x) < n: return np.nan
@@ -23,15 +22,31 @@ def calculate_rci(series, period):
     return series.rolling(window=n).apply(rci_func)
 
 def get_latest_prime_list():
-    """JPXからプライム銘柄リストを取得"""
-    headers = {"User-Agent": "Mozilla/5.0"}
+    """JPXのサイトから最新のExcelURLを自動的に探し出して取得する"""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        url = "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls"
-        resp = requests.get(url, headers=headers, timeout=10)
+        # まず統計ページからExcelの直リンクを探す
+        base_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+        res = requests.get(base_url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        xls_url = ""
+        for a in soup.find_all('a', href=True):
+            if 'data_j.xls' in a['href']:
+                xls_url = "https://www.jpx.co.jp" + a['href']
+                break
+        
+        if not xls_url:
+            # リンクが見つからない場合の予備URL
+            xls_url = "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls"
+
+        print(f"📡 Downloading list from: {xls_url}")
+        resp = requests.get(xls_url, headers=headers, timeout=20)
         df = pd.read_excel(io.BytesIO(resp.content), dtype={'コード': str})
         prime_df = df[df['市場・商品区分'].str.contains('プライム', na=False)]
         return {f"{row['コード']}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
-    except:
+    except Exception as e:
+        print(f"⚠️ List acquisition failed: {e}")
         return {"5016.T": "ＪＸ金属", "6481.T": "THK"}
 
 def send_discord(title, stock_list):
@@ -49,38 +64,32 @@ def send_discord(title, stock_list):
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
     now_str = datetime.now(jst).strftime('%Y/%m/%d %H:%M')
+    
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    print(f"Patrol started at {now_str}")
+    # 状況を把握するため、最初に必ずDiscordへ通知
+    start_msg = f"🔎 **パトロール開始** ({now_str})\n対象: {len(ticker_list)} 銘柄"
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": start_msg})
 
     up_signals, down_signals = [], []
     total_scanned = 0
 
-    # 400件ずつダウンロード（安定重視）
+    # 安定して1,600銘柄を取得するための分割処理
     chunk_size = 400
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # sessionを指定せず、threads=Falseで確実に取得
-            data_chunk = yf.download(
-                chunk, 
-                period="2y", 
-                interval="1d", 
-                group_by='ticker', 
-                threads=False, 
-                progress=False
-            )
+            data_chunk = yf.download(chunk, period="2y", interval="1d", group_by='ticker', threads=False, progress=False)
             if not data_chunk.empty:
                 all_data = pd.concat([all_data, data_chunk], axis=1)
         except Exception as e:
-            print(f"Download Error for chunk {i}: {e}")
-        time.sleep(5) # 少し長めに休憩
+            print(f"Error at chunk {i}: {e}")
+        time.sleep(5)
 
     for ticker in ticker_list:
         try:
-            # データの検証
             if ticker not in all_data.columns.get_level_values(0): continue
             df = all_data[ticker].dropna()
             if len(df) < 201: continue
@@ -89,7 +98,7 @@ if __name__ == "__main__":
             prev = df.iloc[-2]
             price = int(curr['Close'])
 
-            # 母集団フィルター（3k-30k / 15億以上 / ボラ2%以上）
+            # 厳選フィルター
             if not (3000 < price <= 30000): continue
             avg_value = (df['Close'] * df['Volume']).tail(25).mean()
             if avg_value < 1_500_000_000: continue
@@ -98,7 +107,7 @@ if __name__ == "__main__":
 
             total_scanned += 1
 
-            # テクニカル指標（RCI計算の精密化）
+            # テクニカル計算
             df['RSI'] = ta.rsi(df['Close'], length=14)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['MA5'] = ta.sma(df['Close'], length=5)
@@ -106,14 +115,11 @@ if __name__ == "__main__":
             df['MA60'] = ta.sma(df['Close'], length=60)
             df['MA200'] = ta.sma(df['Close'], length=200)
             
-            curr = df.iloc[-1]
-            prev = df.iloc[-2]
+            curr, prev = df.iloc[-1], df.iloc[-2]
 
-            # トレンド判定
             is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
             is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
 
-            # シグナル判定（利確条件: RSI 90）
             tokubai = (curr['RSI'] <= 10 and curr['RCI9'] <= -70)
             kaimashi = ((curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50))
             rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 90)
@@ -131,8 +137,8 @@ if __name__ == "__main__":
         except:
             continue
 
-    summary = f"📊 **哨戒結果 ({now_str})**\n母集団: {total_scanned} 社 / 合致: {len(up_signals) + len(down_signals)} 件"
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": summary})
+    final_msg = f"📊 **哨戒完了**\n厳選通過: {total_scanned} 社 / シグナル合致: {len(up_signals) + len(down_signals)} 件"
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": final_msg})
 
-    send_discord("🔥 強上昇トレンド × シグナル合致", up_signals)
-    send_discord("🌪️ 強下降トレンド × シグナル合致", down_signals)
+    send_discord("🔥 強上昇トレンド × シグナル", up_signals)
+    send_discord("🌪️ 強下降トレンド × シグナル", down_signals)
