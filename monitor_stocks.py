@@ -11,23 +11,19 @@ from bs4 import BeautifulSoup
 # --- 設定 ---
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
-# yfinanceのデータベースエラー(locked)を防ぐ
-import yfinance.utils as yfu
-yf.set_tz_cache_location(None) 
-
 def calculate_rci(series, period):
+    """RCIの計算（精密版）"""
     n = period
     def rci_func(x):
         if len(x) < n: return np.nan
-        # 窓内の価格順位（高い順）
         price_ranks = pd.Series(x).rank(ascending=False).values
-        # 時間順位（最新が1位）
         time_ranks = np.arange(n, 0, -1)
         d2 = np.sum((price_ranks - time_ranks)**2)
         return (1 - (6 * d2) / (n * (n**2 - 1))) * 100
     return series.rolling(window=n).apply(rci_func)
 
 def get_latest_prime_list():
+    """JPXからプライム銘柄リストを取得"""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = "https://www.jpx.co.jp/markets/statistics-banner/quote/01_data_j.xls"
@@ -61,18 +57,36 @@ if __name__ == "__main__":
     up_signals, down_signals = [], []
     total_scanned = 0
 
-    # 分割ダウンロード
+    # 通信を安定させるためのセッション作成
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+    # 400件ずつダウンロード（安定重視）
     chunk_size = 400
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
-        # threads=False にしてデータベースロックを回避（安定重視）
-        data_chunk = yf.download(chunk, period="2y", interval="1d", group_by='ticker', threads=False, progress=False)
-        all_data = pd.concat([all_data, data_chunk], axis=1)
+        try:
+            # threads=False にすることでデータベースのロック競合を回避
+            # session を渡すことで通信エラーを軽減
+            data_chunk = yf.download(
+                chunk, 
+                period="2y", 
+                interval="1d", 
+                group_by='ticker', 
+                threads=False, 
+                progress=False,
+                session=session
+            )
+            all_data = pd.concat([all_data, data_chunk], axis=1)
+        except Exception as e:
+            print(f"Download Error for chunk {i}: {e}")
         time.sleep(3)
 
     for ticker in ticker_list:
         try:
+            # データの検証
+            if ticker not in all_data.columns.get_level_values(0): continue
             df = all_data[ticker].dropna()
             if len(df) < 201: continue
             
@@ -89,7 +103,7 @@ if __name__ == "__main__":
 
             total_scanned += 1
 
-            # 指標計算
+            # テクニカル指標（RCI計算の精密化）
             df['RSI'] = ta.rsi(df['Close'], length=14)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['MA5'] = ta.sma(df['Close'], length=5)
@@ -104,10 +118,10 @@ if __name__ == "__main__":
             is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
             is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
 
-            # シグナル判定
+            # シグナル判定（利確条件: RSI 90）
             tokubai = (curr['RSI'] <= 10 and curr['RCI9'] <= -70)
             kaimashi = ((curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50))
-            rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 90) # 厳格化条件
+            rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 90)
 
             if tokubai or kaimashi or rikaku:
                 vol_spike = curr['Volume'] > (df['Volume'].tail(5).mean() * 1.2)
