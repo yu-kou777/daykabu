@@ -32,11 +32,10 @@ def get_latest_prime_list():
         prime_df = df[df['市場・商品区分'].str.contains('プライム', na=False)]
         return {f"{row['コード']}.T": row['銘柄名'] for _, row in prime_df.iterrows()}
     except:
-        # 取得失敗時のフォールバック
         return {"5016.T": "ＪＸ金属", "6481.T": "THK"}
 
 def send_discord(title, stock_list):
-    """Discordへの通知送信（長文分割対応）"""
+    """Discordへの通知送信"""
     if not stock_list: return
     header = f"**【{title}】**\n"
     content = ""
@@ -50,7 +49,7 @@ def send_discord(title, stock_list):
 
 if __name__ == "__main__":
     jst = timezone(timedelta(hours=9))
-    now_str = datetime.now(jst).strftime('%H:%M')
+    now_str = datetime.now(jst).strftime('%Y/%m/%d %H:%M')
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
@@ -59,7 +58,6 @@ if __name__ == "__main__":
     up_signals, down_signals = [], []
     total_scanned = 0
 
-    # 500件ずつ一括ダウンロード（速度と安定のバランス）
     chunk_size = 500
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
@@ -77,7 +75,7 @@ if __name__ == "__main__":
             prev = df.iloc[-2]
             price = int(curr['Close'])
 
-            # 1. 母集団フィルター（3k-30k / 15億以上 / ボラ2%以上）
+            # 母集団フィルター（3k-30k / 15億以上 / ボラ2%以上）
             if not (3000 < price <= 30000): continue
             avg_value = (df['Close'] * df['Volume']).tail(25).mean()
             if avg_value < 1_500_000_000: continue
@@ -86,7 +84,7 @@ if __name__ == "__main__":
 
             total_scanned += 1
 
-            # 2. テクニカル指標計算
+            # テクニカル指標
             df['RSI'] = ta.rsi(df['Close'], length=14)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['MA5'] = ta.sma(df['Close'], length=5)
@@ -97,17 +95,17 @@ if __name__ == "__main__":
             curr = df.iloc[-1]
             prev = df.iloc[-2]
 
-            # 3. トレンド判定（パーフェクトオーダー）
+            # トレンド判定
             is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
             is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
 
-            # 4. シグナル判定
+            # シグナル判定
             tokubai = (curr['RSI'] <= 10 and curr['RCI9'] <= -70)
             kaimashi = ((curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50))
-            rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 80)
+            # 【厳格化】利確条件: RCI 95以上 かつ RSI 90以上
+            rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 90)
 
             if tokubai or kaimashi or rikaku:
-                # 出来高急増チェック
                 vol_spike = curr['Volume'] > (df['Volume'].tail(5).mean() * 1.2)
                 spike_mark = "⚡" if vol_spike else ""
                 
@@ -123,7 +121,6 @@ if __name__ == "__main__":
         except:
             continue
 
-    # 最終報告
     summary = f"📊 **精密哨戒完了 ({now_str})**\n母集団: {total_scanned} 社 / 合致: {len(up_signals) + len(down_signals)} 件"
     requests.post(DISCORD_WEBHOOK_URL, json={"content": summary})
 
