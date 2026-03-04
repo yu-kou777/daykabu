@@ -57,31 +57,26 @@ if __name__ == "__main__":
     up_signals, down_signals = [], []
     total_scanned = 0
 
-    # 通信を安定させるためのセッション作成
-    session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0"})
-
     # 400件ずつダウンロード（安定重視）
     chunk_size = 400
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # threads=False にすることでデータベースのロック競合を回避
-            # session を渡すことで通信エラーを軽減
+            # sessionを指定せず、threads=Falseで確実に取得
             data_chunk = yf.download(
                 chunk, 
                 period="2y", 
                 interval="1d", 
                 group_by='ticker', 
                 threads=False, 
-                progress=False,
-                session=session
+                progress=False
             )
-            all_data = pd.concat([all_data, data_chunk], axis=1)
+            if not data_chunk.empty:
+                all_data = pd.concat([all_data, data_chunk], axis=1)
         except Exception as e:
             print(f"Download Error for chunk {i}: {e}")
-        time.sleep(3)
+        time.sleep(5) # 少し長めに休憩
 
     for ticker in ticker_list:
         try:
@@ -94,7 +89,7 @@ if __name__ == "__main__":
             prev = df.iloc[-2]
             price = int(curr['Close'])
 
-            # 母集団フィルター
+            # 母集団フィルター（3k-30k / 15億以上 / ボラ2%以上）
             if not (3000 < price <= 30000): continue
             avg_value = (df['Close'] * df['Volume']).tail(25).mean()
             if avg_value < 1_500_000_000: continue
