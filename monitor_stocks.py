@@ -21,6 +21,29 @@ def calculate_rci(series, period):
         return (1 - (6 * d2) / (n * (n**2 - 1))) * 100
     return series.rolling(window=n).apply(rci_func)
 
+def get_trend_evaluation(curr, prev):
+    """MA5, 20, 60, 200の動きでトレンド強度を評価"""
+    # 上昇方向の並び
+    up_po = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
+    up_mid = curr['MA20'] > curr['MA60'] > curr['MA200']
+    # 下降方向の並び
+    down_po = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
+    down_mid = curr['MA20'] < curr['MA60'] < curr['MA200']
+    
+    # 全MAの傾き（上昇・下降の数）
+    mas = ['MA5', 'MA20', 'MA60', 'MA200']
+    slope_up = sum([curr[m] > prev[m] for m in mas])
+    slope_down = sum([curr[m] < prev[m] for m in mas])
+
+    if up_po and slope_up >= 3:
+        return "★★★ (最強上昇PO)"
+    elif down_po and slope_down >= 3:
+        return "★★★ (最強下降PO)"
+    elif up_mid or down_mid:
+        return "★★☆ (主要トレンド維持)"
+    else:
+        return "★☆☆ (トレンド形成/調整中)"
+
 def get_latest_prime_list():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -53,25 +76,21 @@ if __name__ == "__main__":
     ticker_map = get_latest_prime_list()
     ticker_list = list(ticker_map.keys())
     
-    # 開始通知
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **高速パトロール開始** ({len(ticker_list)}銘柄)"})
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": f"🚀 **トレンド強度分析パトロール開始** ({len(ticker_list)}銘柄)"})
 
     up_signals, down_signals = [], []
     total_scanned = 0
 
-    # 【改善1】チャンクサイズを800に拡大
     chunk_size = 800
     all_data = pd.DataFrame()
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # 【改善2】threads=True に戻して並列ダウンロード
             data_chunk = yf.download(chunk, period="2y", interval="1d", group_by='ticker', threads=True, progress=False)
             if not data_chunk.empty:
                 all_data = pd.concat([all_data, data_chunk], axis=1)
         except Exception as e:
             print(f"Error: {e}")
-        # 【改善3】待機時間を2秒に短縮
         time.sleep(2)
 
     for ticker in ticker_list:
@@ -80,10 +99,11 @@ if __name__ == "__main__":
             df = all_data[ticker].dropna()
             if len(df) < 201: continue
             
-            curr = df.iloc[-1]
-            price = int(curr['Close'])
+            curr_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
+            price = int(curr_row['Close'])
 
-            # 厳選フィルター（条件は維持）
+            # 厳選フィルター（条件維持）
             if not (3000 < price <= 30000): continue
             avg_value = (df['Close'] * df['Volume']).tail(25).mean()
             if avg_value < 1_500_000_000: continue
@@ -92,7 +112,7 @@ if __name__ == "__main__":
 
             total_scanned += 1
 
-            # テクニカル指標（精密計算は維持）
+            # テクニカル指標
             df['RSI'] = ta.rsi(df['Close'], length=14)
             df['RCI9'] = calculate_rci(df['Close'], 9)
             df['MA5'] = ta.sma(df['Close'], length=5)
@@ -102,9 +122,10 @@ if __name__ == "__main__":
             
             curr, prev = df.iloc[-1], df.iloc[-2]
 
-            is_uptrend = curr['MA5'] > curr['MA20'] > curr['MA60'] > curr['MA200']
-            is_downtrend = curr['MA5'] < curr['MA20'] < curr['MA60'] < curr['MA200']
+            # トレンド強度評価の取得
+            trend_str = get_trend_evaluation(curr, prev)
 
+            # シグナル判定
             tokubai = (curr['RSI'] <= 10 and curr['RCI9'] <= -70)
             kaimashi = ((curr['RSI'] <= 20 and curr['RCI9'] <= -50) or (prev['RSI'] <= 20 and prev['RCI9'] <= -50))
             rikaku = (curr['RCI9'] >= 95 and curr['RSI'] >= 90)
@@ -114,16 +135,25 @@ if __name__ == "__main__":
                 spike = "⚡" if vol_spike else ""
                 tag = f"🚨{spike}【特買い】" if tokubai else (f"✨{spike}【買い増し】" if kaimashi else f"💰{spike}【利確】")
                 
-                info = f"{tag} {ticker_map[ticker]}({ticker}) : {price}円 [RCI:{int(curr['RCI9'])} RSI:{int(curr['RSI'])}]\n└ [📈 チャート](https://finance.yahoo.co.jp/quote/{ticker})"
+                info = (
+                    f"{tag} {ticker_map[ticker]}({ticker}) : {price}円\n"
+                    f"├ 強度: {trend_str}\n"
+                    f"├ 指標: [RCI:{int(curr['RCI9'])} RSI:{int(curr['RSI'])}]\n"
+                    f"└ [📈 チャート](https://finance.yahoo.co.jp/quote/{ticker})"
+                )
                 
-                if is_uptrend: up_signals.append(f"📈上昇中 ➔ {info}")
-                elif is_downtrend: down_signals.append(f"📉下降中 ➔ {info}")
+                # トレンドの向きで分類
+                if "上昇" in trend_str or (curr['MA20'] > curr['MA60']):
+                    up_signals.append(info)
+                else:
+                    down_signals.append(info)
 
         except:
             continue
 
-    final_msg = f"📊 **哨戒完了**\n厳選通過: {total_scanned} 社 / 合致: {len(up_signals) + len(down_signals)} 件"
+    final_msg = f"📊 **哨戒完了**\n厳選通過: {total_scanned} 社 / シグナル合致: {len(up_signals) + len(down_signals)} 件"
     requests.post(DISCORD_WEBHOOK_URL, json={"content": final_msg})
 
-    send_discord("🔥 強上昇トレンド × シグナル", up_signals)
-    send_discord("🌪️ 強下降トレンド × シグナル", down_signals)
+    send_discord("📈 上昇トレンド軸 × シグナル合致", up_signals)
+    send_discord("📉 下降トレンド軸 × シグナル合致", down_signals)
+
