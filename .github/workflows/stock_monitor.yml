@@ -2,23 +2,20 @@ name: Stock Monitor
 
 on:
   schedule:
-    # 日本時間 12:30 (UTC 03:30)
-    # 大幅な遅延が発生しても、15:00の市場終了前に通知を届かせるための設定です。
-    - cron: '30 3 * * 1-5'
-  workflow_dispatch:
+    - cron: '0 9 * * 1-5' # 平日 UTC 9:00 (日本時間 18:00)
+  workflow_dispatch: # 手動実行用
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: '3.10'
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install yfinance pandas pandas-ta requests openpyxl xlrd lxml beautifulsoup4
-      - name: Run monitor
+          pip install yfinance pandas pandas-ta numpy requests xlrd openpyxl
+      - name: Run script
         run: python monitor_stocks.py
