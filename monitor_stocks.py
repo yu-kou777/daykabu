@@ -21,13 +21,12 @@ def calculate_rci(series, period):
     return series.rolling(window=period).apply(rci_func)
 
 def calculate_rsi(series, period=14):
-    """自作RSI関数（pandas-ta不要）"""
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
+    rs = avg_gain / (avg_loss + 1e-9)
     return 100 - (100 / (1 + rs))
 
 def get_ticker_list():
@@ -53,12 +52,14 @@ def main():
     tickers = list(ticker_map.keys())
     
     results = {
-        "🚨【即買い・大底】": [],
-        "💎【鉄板・同時GC】": [],
-        "🎯【仕込み・GC直前】": [],
-        "🌀【VWAP回帰狙い】": []
+        "🚨 01.【即買い・大底】": [],
+        "💎 02.【鉄板・同時GC】": [],
+        "🎯 03.【仕込み・GC直前】": [],
+        "🌀 04.【VWAP回帰狙い】": []
     }
-    hit_codes = []
+    
+    # コピペ用コード格納用
+    copy_lists = { "01": [], "02": [], "03": [] }
 
     # 一括ダウンロード
     chunk_size = 100
@@ -76,7 +77,6 @@ def main():
                     trading_value = (df['Close'] * df['Volume']).tail(5).mean()
                     if trading_value < MIN_TRADING_VALUE: continue
 
-                    # 指標計算（自作関数を使用）
                     rsi = calculate_rsi(df['Close'], 14)
                     rci9 = calculate_rci(df['Close'], 9)
                     rci27 = calculate_rci(df['Close'], 27)
@@ -89,34 +89,41 @@ def main():
                     c_psy = psy.iloc[-1]
                     c_vwap = vwap25.iloc[-1]
 
-                    is_hit = False
                     info = f"・{ticker_map[ticker]}({ticker}) {int(curr_price)}円 [RSI:{int(c_rsi)} RCI9:{int(c_rci9)}]"
+                    code = ticker.replace(".T", "")
 
+                    # 判定ロジック
                     if c_rci9 <= -90 and c_rsi <= 10:
-                        results["🚨【即買い・大底】"].append(info); is_hit = True
+                        results["🚨 01.【即買い・大底】"].append(info)
+                        copy_lists["01"].append(code)
                     elif c_rsi <= 50 and (p_rci9 < p_rci27 and c_rci9 >= c_rci27) and c_rci9 <= -50:
-                        results["💎【鉄板・同時GC】"].append(info); is_hit = True
+                        results["💎 02.【鉄板・同時GC】"].append(info)
+                        copy_lists["02"].append(code)
                     elif c_rci9 <= -50 and c_rci9 > p_rci9 and (30 <= c_psy <= 50):
-                        results["🎯【仕込み・GC直前】"].append(info); is_hit = True
+                        results["🎯 03.【仕込み・GC直前】"].append(info)
+                        copy_lists["03"].append(code)
                     elif curr_price < c_vwap and (c_rsi <= 20 or c_rci9 <= -70):
-                        results["🌀【VWAP回帰狙い】"].append(info); is_hit = True
+                        results["🌀 04.【VWAP回帰狙い】"].append(info)
 
-                    if is_hit: hit_codes.append(ticker.replace(".T", ""))
                 except: continue
         except: continue
         time.sleep(1)
 
+    # 通知メッセージ構築
     msg = f"📋 **テス流・ハイブリッド投資戦略パトロール**\n({datetime.now(jst).strftime('%Y/%m/%d %H:%M')} 実行)\n\n"
-    found_any = False
+    
     for cat, items in results.items():
         if items:
             msg += f"**{cat}**\n" + "\n".join(items) + "\n\n"
-            found_any = True
     
-    if hit_codes:
-        msg += "📋 **Streamlit診断用リスト**\n"
-        msg += f"```text\n{','.join(sorted(list(set(hit_codes))))}\n```"
-    elif not found_any:
+    # 最下部にコピペ用リストを追加
+    msg += "--- 📋 銘柄コピペ用リスト ---\n"
+    for key in ["01", "02", "03"]:
+        if copy_lists[key]:
+            codes_str = ",".join(sorted(list(set(copy_lists[key]))))
+            msg += f"**【{key} 用リスト】**\n```\n{codes_str}\n```\n"
+    
+    if not any(results.values()):
         msg += "🔍 本日は厳選条件に合致する銘柄はありませんでした。"
 
     send_discord(msg)
