@@ -2,7 +2,7 @@ name: Stock Monitor
 
 on:
   schedule:
-    - cron: '0 9 * * 1-5' # 平日 UTC 9:00 (日本時間 18:00)
+    - cron: '0 9 * * 1-5' # 平日 日本時間 18:00
   workflow_dispatch: # 手動実行用
 
 jobs:
@@ -13,9 +13,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.12' # バージョンを最新に
       - name: Install dependencies
         run: |
-          pip install yfinance pandas pandas-ta numpy requests xlrd openpyxl
+          pip install --upgrade pip
+          pip install yfinance pandas numpy requests xlrd openpyxl
       - name: Run script
         run: python monitor_stocks.py
