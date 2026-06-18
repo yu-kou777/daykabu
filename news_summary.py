@@ -9,33 +9,44 @@ from datetime import datetime, timezone, timedelta
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1472281747000393902/Fbclh0R3R55w6ZnzhenJ24coaUPKy42abh3uPO-fRjfQulk9OwAq-Cf8cJQOe2U4SFme"
 
 def get_kabutan_news():
-    """株探の最新ニュースを直接スクレイピングする（最も確実な方法）"""
+    """株探のトップニュースをより確実に検知してスクレイピングする"""
     url = "https://kabutan.jp/news/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        # 文字化け防止対策
         response.encoding = response.apparent_encoding
         
         soup = BeautifulSoup(response.content, "html.parser")
         news_list = []
         
-        # 株探のニュース一覧から上位3件を取得
-        for item in soup.select("table.news_list tr")[:3]:
-            a_tag = item.select_one("td.news_title a")
-            if not a_tag:
+        # 💡 サイトの構造変更に強い汎用的なリンク抽出
+        # ニュース一覧ページ内の「/news/?keyword=」や「/news/flash/」などのニュースリンクをすべて自動検索
+        links = soup.find_all("a", href=re.compile(r"/news/"))
+        
+        for a_tag in links:
+            title = a_tag.get_text(strip=True)
+            href = a_tag.get("href", "")
+            
+            # 短すぎる文字や、メニュー用のリンクを除外するための安全フィルター
+            if len(title) < 10 or "開示情報" in title or "市場ニュース" in title:
                 continue
                 
-            title = a_tag.get_text(strip=True)
-            link = "https://kabutan.jp" + a_tag["href"]
-            news_list.append({"title": title, "link": link})
+            link = "https://kabutan.jp" + href if href.startswith("/") else href
             
+            # 重複を排除しながら最新の3件をピックアップ
+            if {"title": title, "link": link} not in news_list:
+                news_list.append({"title": title, "link": link})
+            if len(news_list) >= 3:
+                break
+                
         return news_list
     except Exception as e:
         print(f"データ取得エラー: {e}")
         return []
+
+import re # 検索用に追加
 
 def main():
     # 日本時間に変換
@@ -52,7 +63,6 @@ def main():
     else:
         message_content += "📦 **株探（Kabutan） 最新注目ニュース**\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
         for i, item in enumerate(news, 1):
-            # 簡易的に読みやすい3行構成にします
             message_content += f"📌 **{item['title']}**\n"
             message_content += f" 📝 ① 概要: 本日の注目材料・市場ニュース\n"
             message_content += f" 📝 ② 影響: 個別銘柄の物色や地合いへの波及に注目\n"
