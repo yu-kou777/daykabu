@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
+import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
@@ -22,17 +23,15 @@ def get_yahoo_news():
         # Yahoo!ニュースのトップ記事リンクを自動収集
         topics = soup.find_all("a", href=re.compile(r"/pickup/"))
         
-        # 💡 もしpickupで見つからない場合の予備ルート
+        # もしpickupで見つからない場合の予備ルート
         if not topics:
             topics = soup.find_all("a", href=re.compile(r"/articles/"))
-
-        import re # 内部で使用するため再度保証
         
         for a_tag in topics:
             title = a_tag.get_text(strip=True)
             link = a_tag.get("href", "")
             
-            # 文字数が少なすぎるノイズを除外
+            # 文字数が少なすぎるナビゲーション用の文字列を除外
             if len(title) < 12:
                 continue
                 
@@ -46,8 +45,6 @@ def get_yahoo_news():
     except Exception as e:
         print(f"データ取得エラー: {e}")
         return []
-
-import re # 先頭でのエラーを完全に防ぐお守り
 
 def main():
     # 日本時間に変換
