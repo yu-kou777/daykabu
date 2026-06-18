@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
+import re  # 💡 認識エラーを防ぐため、一番上に移動しました
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
@@ -21,8 +22,7 @@ def get_kabutan_news():
         soup = BeautifulSoup(response.content, "html.parser")
         news_list = []
         
-        # 💡 サイトの構造変更に強い汎用的なリンク抽出
-        # ニュース一覧ページ内の「/news/?keyword=」や「/news/flash/」などのニュースリンクをすべて自動検索
+        # サイトの構造変更に強い汎用的なリンク抽出
         links = soup.find_all("a", href=re.compile(r"/news/"))
         
         for a_tag in links:
@@ -45,8 +45,6 @@ def get_kabutan_news():
     except Exception as e:
         print(f"データ取得エラー: {e}")
         return []
-
-import re # 検索用に追加
 
 def main():
     # 日本時間に変換
