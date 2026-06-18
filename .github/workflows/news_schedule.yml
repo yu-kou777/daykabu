@@ -1,0 +1,30 @@
+name: Morning News Summary Update
+
+on:
+  schedule:
+    # 💡 重要：GitHub ActionsはUTC（世界標準時）基準です。
+    # 日本時間の「平日朝7:00」は、UTCの「前日夜22:00」になります。
+    # 日曜〜木曜の夜22:00に実行することで、日本時間の月曜〜金曜の朝7:00に通知が届きます。
+    - cron: '0 22 * * 0-4'
+  workflow_dispatch: # 手動でいつでもテスト実行できるようにするボタンを設置
+
+jobs:
+  run-news-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: レポジトリのコードをチェックアウト
+      uses: actions/checkout@v3
+
+    - name: Python環境のセットアップ
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 必要なライブラリのインストール
+      run: |
+        python -m pip install --upgrade pip
+        pip install feedparser requests
+
+    - name: ニュース要約スクリプトの実行
+      run: python news_summary.py
